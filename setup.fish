@@ -1,12 +1,13 @@
 #!/usr/bin/env fish
 # setup.fish — Prepare custom CachyOS ISO build tree
 # Requires: running GTR9 Pro with ry-install applied, git, sudo
-# v3.5.2 — 2026-03-07
+# v3.7.0 — 2026-03-09
 
-set -g VERSION "3.5.2"
+set -g VERSION "3.7.0"
 set -g SCRIPT_DIR (status dirname)
 set -g ISO_DIR "$SCRIPT_DIR/cachyos-custom-iso"
 set -g AIROOTFS "$ISO_DIR/archiso/airootfs"
+set -g LOCKFILE "$SCRIPT_DIR/.setup.lock"
 
 # ── Colors ──────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ if set -q _flag_help
     echo ""
     echo "Options:"
     echo "  --dry-run    Preview changes without modifying anything"
-    echo "  --force      Overwrite existing ISO directory"
+    echo "  --force      Overwrite existing ISO directory, bypass version mismatch"
     echo "  -h, --help   Show this help"
     echo "  -v, --version Show version"
     exit 0
@@ -72,7 +73,7 @@ end
 
 # ── Helpers ─────────────────────────────────────────────
 
-function _cp
+function _cp --description "Copy file with optional sudo, dry-run awareness"
     # _cp SOURCE DEST [--sudo]
     set -l src $argv[1]
     set -l dst $argv[2]
@@ -103,6 +104,40 @@ function _cp
     _ok "copied: $src → $dst"
 end
 
+function _extract_fish_var --description "Extract a Fish global variable's values from a source file"
+    # _extract_fish_var VARNAME FILE
+    # Extracts values from `set -g VARNAME val1 val2 \` (possibly multiline)
+    # Returns space-separated string on stdout.
+    set -l varname $argv[1]
+    set -l srcfile $argv[2]
+
+    # Write sed script to a temp file to avoid Fish/sed double-escaping issues.
+    # Logic: find the declaration line, loop to collect backslash continuations,
+    # strip the `set -g VARNAME` prefix, collapse newlines to spaces.
+    set -l sedscript (mktemp)
+    printf '/^[[:space:]]*set -g %s\\b/{\n:loop\n/\\\\[[:space:]]*$/{\nN\nb loop\n}\ns/^[[:space:]]*set -g %s[[:space:]]*//\ns/\\\\[[:space:]]*\\n/ /g\ns/^[[:space:]]*//\ns/[[:space:]]*$//\np\n}\n' "$varname" "$varname" > "$sedscript"
+    sed -nf "$sedscript" "$srcfile" | tr -s ' ' | sed 's/^ //; s/ $//'
+    rm -f "$sedscript"
+end
+
+# ── Lock ────────────────────────────────────────────────
+
+if test "$DRY" = false
+    if test -f "$LOCKFILE"
+        set -l lock_pid (cat "$LOCKFILE" 2>/dev/null)
+        if test -n "$lock_pid"; and kill -0 -- "$lock_pid" 2>/dev/null
+            _err "another setup.fish is running (PID $lock_pid)"
+            exit 1
+        end
+        _warn "removing stale lock (PID $lock_pid)"
+        rm -f "$LOCKFILE"
+    end
+    echo %self > "$LOCKFILE"
+    function _cleanup_lock --on-event fish_exit
+        rm -f "$LOCKFILE" 2>/dev/null
+    end
+end
+
 # ── Preflight ───────────────────────────────────────────
 
 _step "Preflight checks"
@@ -127,20 +162,37 @@ if test -z "$RY_INSTALL"
 end
 _ok "ry-install.fish: $RY_INSTALL"
 
-# Verify ry-install version matches this bundle
-set -l ry_version (grep '^set -g VERSION ' "$RY_INSTALL" | string replace -r 'set -g VERSION "([^"]+)"' '$1')
+# Verify ry-install version matches this bundle — hard error unless --force
+set -l ry_version (grep '^set -g VERSION ' "$RY_INSTALL" | head -1 | string replace -r 'set -g VERSION "([^"]+)"' '$1')
 if test "$ry_version" != "$VERSION"
-    _warn "ry-install version mismatch: $ry_version (expected $VERSION)"
+    if set -q _flag_force
+        _warn "ry-install version mismatch: $ry_version (expected $VERSION) — continuing (--force)"
+    else
+        _err "ry-install version mismatch: $ry_version (expected $VERSION)"
+        _err "Update the bundle to match ry-install, or use --force to bypass"
+        exit 1
+    end
 end
 
-# Check running system has configs deployed (ry-install --verify-static would be ideal)
+# Check running system has all 16 static configs deployed
+# (all SYSTEM_DESTINATIONS + SERVICE_DESTINATIONS + USER_DESTINATIONS minus cmdline)
 set -l check_files \
     /boot/loader/loader.conf \
     /etc/sdboot-manage.conf \
     /etc/mkinitcpio.conf \
     /etc/modprobe.d/99-cachyos-modprobe.conf \
     /etc/sysctl.d/99-ry-sysctl.conf \
-    /etc/systemd/system/amdgpu-performance.service
+    /etc/udev/rules.d/99-cachyos-udev.rules \
+    /etc/systemd/resolved.conf.d/99-cachyos-resolved.conf \
+    /etc/systemd/logind.conf.d/99-cachyos-logind.conf \
+    /etc/iwd/main.conf \
+    /etc/NetworkManager/conf.d/99-cachyos-nm.conf \
+    /etc/conf.d/wireless-regdom \
+    /etc/systemd/system/amdgpu-performance.service \
+    /etc/systemd/system/cpupower-epp.service \
+    "$HOME/.config/fish/conf.d/10-ssh-auth-sock.fish" \
+    "$HOME/.config/environment.d/10-environment.conf" \
+    "$HOME/.config/systemd/user/ssh-agent.service"
 set -l missing 0
 for f in $check_files
     if not test -f "$f"
@@ -152,7 +204,7 @@ if test $missing -gt 0
     _err "Run ry-install.fish --all first, then re-run this setup"
     exit 1
 end
-_ok "running system configs present"
+_ok "all 16 static configs present on running system"
 
 # Check git
 command -q git; or begin; _err "git not found"; exit 1; end
@@ -193,7 +245,6 @@ end
 
 _step "Step 2: Create overlay directories"
 
-# v3.5.2: removed modules-load.d, journald.conf.d, coredump.conf.d; added sysctl.d
 set -l dirs \
     boot/loader \
     etc/kernel \
@@ -203,6 +254,7 @@ set -l dirs \
     etc/systemd/resolved.conf.d \
     etc/systemd/logind.conf.d \
     etc/systemd/system/multi-user.target.wants \
+    etc/systemd/user-preset \
     etc/iwd \
     etc/NetworkManager/conf.d \
     etc/conf.d \
@@ -226,8 +278,7 @@ _ok "$n directories"
 
 _step "Step 3: Copy 16 static configs from running system"
 
-# 12 system configs (excluding /etc/kernel/cmdline — generated at install time)
-# v3.5.2: removed modules-load.d, journald.conf.d, coredump.conf.d; added sysctl.d
+# 11 system configs (excluding /etc/kernel/cmdline — generated at install time)
 set -l system_files \
     /boot/loader/loader.conf \
     /etc/sdboot-manage.conf \
@@ -290,6 +341,15 @@ _cp "$SCRIPT_DIR/shellprocess-ry-install.conf" \
 # ry-install.fish itself
 _cp "$RY_INSTALL" "$AIROOTFS/usr/local/bin/ry-install.fish"
 
+# ssh-agent user preset — deployed at build time so it's active on first login
+# (creating at first-boot is too late — systemd --user reads presets at session start)
+if test "$DRY" = true
+    _info "would create: $AIROOTFS/etc/systemd/user-preset/50-ry-install.preset"
+else
+    echo "enable ssh-agent.service" > "$AIROOTFS/etc/systemd/user-preset/50-ry-install.preset"
+    _ok "created: ssh-agent user preset"
+end
+
 # First-boot enable symlink
 if test "$DRY" = true
     _info "would symlink: ry-install-firstboot.service → multi-user.target.wants"
@@ -307,6 +367,67 @@ if test "$DRY" = false
     _ok "scripts marked executable"
 end
 
+# ── Step 4b: Extract profile data from ry-install and inject into post script ──
+
+_step "Step 4b: Extract profile data from ry-install into post script"
+
+# Extract KERNEL_PARAMS, MASK, and PKGS_DEL from ry-install.fish and inject into
+# the post-install script. This keeps the bundle in sync automatically — no hardcoded
+# lists that drift when ry-install updates.
+
+set -l post_script "$AIROOTFS/usr/local/bin/ry-install-post.sh"
+
+if test "$DRY" = true
+    _info "would extract KERNEL_PARAMS, MASK, PKGS_DEL from $RY_INSTALL"
+    _info "would inject into ry-install-post.sh replacing @@...@@ placeholders"
+else
+    if not test -f "$post_script"
+        _err "post script not found at $post_script"
+        exit 1
+    end
+
+    # Extract each variable
+    set -l kernel_params (_extract_fish_var KERNEL_PARAMS "$RY_INSTALL")
+    set -l mask_list (_extract_fish_var MASK "$RY_INSTALL")
+    set -l pkgs_del (_extract_fish_var PKGS_DEL "$RY_INSTALL")
+
+    # Validate extractions
+    set -l extract_ok true
+    if test -z "$kernel_params"
+        _err "Failed to extract KERNEL_PARAMS from $RY_INSTALL"
+        set extract_ok false
+    end
+    if test -z "$mask_list"
+        _err "Failed to extract MASK from $RY_INSTALL"
+        set extract_ok false
+    end
+    if test -z "$pkgs_del"
+        _err "Failed to extract PKGS_DEL from $RY_INSTALL"
+        set extract_ok false
+    end
+    if test "$extract_ok" = false
+        exit 1
+    end
+
+    # Inject into post script (| delimiter — no kernel params contain |)
+    sed -i "s|@@KERNEL_PARAMS@@|$kernel_params|" "$post_script"
+    sed -i "s|@@MASK@@|$mask_list|" "$post_script"
+    sed -i "s|@@PKGS_DEL@@|$pkgs_del|" "$post_script"
+
+    # Verify: no @@ placeholders remain
+    if grep -q '@@.*@@' "$post_script"
+        _err "Unreplaced placeholders found in post script:"
+        grep '@@.*@@' "$post_script" | head -5
+        exit 1
+    end
+
+    # Count params for log
+    set -l kp_count (string split " " -- "$kernel_params" | count)
+    set -l mask_count (string split " " -- "$mask_list" | count)
+    set -l pkg_count (string split " " -- "$pkgs_del" | count)
+    _ok "injected: KERNEL_PARAMS=$kp_count, MASK=$mask_count, PKGS_DEL=$pkg_count"
+end
+
 # ── Step 5: Modify packages.x86_64 ─────────────────────
 
 _step "Step 5: Modify packages.x86_64"
@@ -316,14 +437,12 @@ if not test -f "$pkgfile"
     _warn "packages.x86_64 not found — check ISO repo structure"
     _warn "you may need to modify Calamares netinstall YAML instead"
 else
-    # v3.5.2: 15 packages (pipewire-libcamera removed — pulled as dep)
+    # v3.7.0: 13 packages (bat/eza removed in v3.6.4 — deps of cachyos-fish-config)
     set -l pkgs_add \
-        bat \
         bottom \
         cachyos-gaming-applications \
         cachyos-gaming-meta \
         dust \
-        eza \
         fd \
         git-delta \
         iw \
@@ -334,7 +453,7 @@ else
         sd \
         stress-ng
 
-    # v3.5.2: 7 packages (power-profiles-daemon moved to MASK)
+    # v3.7.0: 7 packages (power-profiles-daemon moved to MASK)
     set -l pkgs_del \
         btop \
         cachyos-micro-settings \
@@ -358,7 +477,7 @@ else
         end
         _ok "added $added packages"
 
-        # Remove/comment out packages
+        # Comment out packages to remove
         set -l removed 0
         for pkg in $pkgs_del
             if grep -qx "$pkg" "$pkgfile"
@@ -368,9 +487,31 @@ else
         end
         _ok "commented out $removed packages"
 
-        # Sort the file (preserve comment header, re-sort package lines)
+        # Sort the file: preserve file-header comments (contiguous block at top),
+        # keep commented-out packages separate from header, then sort active packages.
         set -l tmp (mktemp)
-        grep '^#' "$pkgfile" > "$tmp"
+        # Header: contiguous comment block at top of file
+        set -l header_end 0
+        set -l line_num 0
+        for line in (cat "$pkgfile")
+            set line_num (math $line_num + 1)
+            if string match -rq '^#' -- "$line"
+                set header_end $line_num
+            else
+                break
+            end
+        end
+        # Write header comments
+        if test $header_end -gt 0
+            head -n "$header_end" "$pkgfile" > "$tmp"
+        end
+        # Write commented-out packages (lines starting with # that are NOT in the header)
+        if test $header_end -gt 0
+            tail -n +"(math $header_end + 1)" "$pkgfile" | grep '^#' >> "$tmp"
+        else
+            grep '^#' "$pkgfile" >> "$tmp"
+        end
+        # Write active packages, sorted
         grep -v '^#' "$pkgfile" | grep -v '^\s*$' | sort -u >> "$tmp"
         mv "$tmp" "$pkgfile"
         _ok "sorted packages.x86_64"
@@ -393,10 +534,13 @@ else
     if test "$DRY" = true
         _info "would add 3 file_permissions entries to profiledef.sh"
     else
-        # Find file_permissions block, then its closing )
+        # Find the file_permissions associative array and its closing paren.
+        # Scope the search to only lines AFTER file_permissions to avoid
+        # matching other arrays or function bodies.
         set -l fp_start (grep -n 'file_permissions' "$profiledef" | head -1 | cut -d: -f1)
         if test -n "$fp_start"
-            set -l close_line (tail -n +"$fp_start" "$profiledef" | grep -n '^)' | head -1 | cut -d: -f1)
+            # Match closing ) that is the sole non-whitespace content on its line
+            set -l close_line (tail -n +"$fp_start" "$profiledef" | grep -n '^\s*)' | head -1 | cut -d: -f1)
             if test -n "$close_line"
                 # close_line is relative to fp_start, convert to absolute
                 set close_line (math "$fp_start + $close_line - 1")
@@ -444,10 +588,13 @@ else
             # Idempotency: skip if already registered
             if grep -q 'shellprocess@ry-install' "$sf"
                 _ok "already registered in: $sf"
-            else if grep -q '\- bootloader' "$sf"
-                # GNU sed 0,/pattern/ range — insert after first occurrence only
-                sed -i '0,/- bootloader/{/- bootloader/a\  - shellprocess@ry-install
-}' "$sf"
+            else if grep -qP '^\s*- bootloader\s*$' "$sf"
+                # Detect indentation from the existing bootloader line
+                set -l indent (grep -P '^\s*- bootloader\s*$' "$sf" | head -1 | sed 's/- bootloader.*//')
+                # Insert after first bootloader occurrence, matching existing indentation
+                sed -i "0,/^[[:space:]]*- bootloader[[:space:]]*\$/{/^[[:space:]]*- bootloader[[:space:]]*\$/a\\
+${indent}- shellprocess@ry-install
+}" "$sf"
                 _ok "inserted in: $sf"
             else
                 _warn "no bootloader entry found in: $sf"

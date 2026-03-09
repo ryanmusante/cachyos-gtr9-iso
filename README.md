@@ -10,16 +10,16 @@
 
 ## Context
 
-ry-install.fish is a 6.5K-line post-install script with 17 embedded configs. Today the workflow is: install CachyOS from stock ISO → run ry-install.fish. The custom ISO eliminates that second step.
+ry-install.fish is a 7.5K-line post-install script with 17 embedded configs. Today the workflow is: install CachyOS from stock ISO → run ry-install.fish. The custom ISO eliminates that second step.
 
 ### What belongs where
 
 | Layer | What | Why |
 |-------|------|-----|
 | **Build-time** (packages.x86_64) | Package add/remove | Baked into squashfs, available in live env and installed system |
-| **Build-time** (airootfs/) | 16 static config files (incl. 2 service units, 3 user files), wrapper scripts, ry-install.fish | Copied verbatim to installed root by Calamares |
-| **Calamares post-install** (shellprocess → wrapper script) | /etc/kernel/cmdline (needs UUID), service masking (9 units), service enable (4 services), package removal (7 packages), mkinitcpio -P, sdboot-manage | Runs in chroot of installed system before first boot |
-| **First-boot** (systemd oneshot) | ssh-agent user preset, ry-install --verify-static | Self-disabling after success; handles user-session services that can't run in chroot |
+| **Build-time** (airootfs/) | 16 static config files (incl. 2 service units, 3 user files), ssh-agent user preset, wrapper scripts, ry-install.fish | Copied verbatim to installed root by Calamares |
+| **Calamares post-install** (shellprocess → wrapper script) | /etc/kernel/cmdline (needs UUID), service masking (9 units), service enable (4 services), package removal (7 packages), mkinitcpio -P, sdboot-manage | Runs in chroot of installed system before first boot; KERNEL_PARAMS, MASK, PKGS_DEL injected from ry-install.fish at build time |
+| **First-boot** (systemd oneshot) | ry-install --verify-static | Self-disabling after success; validates config deployment |
 
 ### Static vs dynamic configs
 
@@ -73,14 +73,12 @@ mkdir -p archiso/airootfs/usr/local/bin
 
 Open `archiso/packages.x86_64`. This is a newline-delimited list of packages.
 
-**Add** (15 packages, one per line, alphabetical):
+**Add** (13 packages, one per line, alphabetical):
 ```
-bat
 bottom
 cachyos-gaming-applications
 cachyos-gaming-meta
 dust
-eza
 fd
 git-delta
 iw
@@ -103,7 +101,7 @@ stress-ng
 #ufw
 ```
 
-**Note:** `power-profiles-daemon` is masked (not removed) to prevent dependency reinstallation conflicts. `pipewire-libcamera` is not listed — it's pulled automatically as a dependency.
+**Note:** `power-profiles-daemon` is masked (not removed) to prevent dependency reinstallation conflicts. `pipewire-libcamera` is not listed — it's pulled automatically as a dependency. `bat` and `eza` are not listed — they're hard dependencies of `cachyos-fish-config` (installed by default on CachyOS desktops).
 
 **Verify:** Some of these may not be in the ISO package list (they might be installed by Calamares netinstall module instead). Check both `packages.x86_64` and any Calamares netinstall YAML files under `archiso/airootfs/etc/calamares/modules/` for the package lists.
 
@@ -207,12 +205,14 @@ The `settings.conf` has an `exec:` list defining module execution order. You nee
 **File:** `archiso/airootfs/usr/local/bin/ry-install-post.sh` — see `ry-install-post.sh`
 
 Key operations (in order):
-1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `blkid` if `findmnt` fails in chroot)
+1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `/etc/fstab` parse if `findmnt` fails in chroot)
 2. Mask 9 services/targets (unconditional — no LVM guard needed for GTR9 Pro)
 3. Enable 4 services (amdgpu-performance, cpupower-epp, fstrim.timer, NM-dispatcher)
 4. Remove 7 conflicting packages (batch with per-package fallback)
 5. Rebuild initramfs (`mkinitcpio -P`)
 6. Regenerate boot entries (`sdboot-manage gen` + `update`)
+
+**Note:** The post-install script uses `@@KERNEL_PARAMS@@`, `@@MASK@@`, and `@@PKGS_DEL@@` placeholders that `setup.fish` replaces at build time by extracting values from `ry-install.fish`. This keeps the bundle in sync automatically. Runtime guards abort if any placeholder is unreplaced.
 
 **File:** `archiso/airootfs/etc/calamares/modules/shellprocess-ry-install.conf`
 
@@ -245,7 +245,7 @@ exec:
 
 ### Task 9: Create first-boot validation service
 
-Handles operations that can't run in Calamares chroot: user-session services (ssh-agent), sysfs validation, runtime verification.
+Handles post-boot validation: runs `ry-install --verify-static` to confirm config deployment. The ssh-agent user preset is deployed at build time via `airootfs/etc/systemd/user-preset/50-ry-install.preset` (not at first boot — systemd reads presets at user session start, so runtime creation would be too late).
 
 **File:** `archiso/airootfs/etc/systemd/system/ry-install-firstboot.service`
 
@@ -351,7 +351,7 @@ ry-install.fish --diff           # Should show no drift
 | `/etc/skel` permissions don't propagate correctly | Test user creation; add `file_permissions` entries if needed |
 | `mkinitcpio -P` fails in chroot (missing /proc, /sys) | Calamares binds these before running shellprocess; verify |
 | `findmnt -no UUID /` fails in chroot | Fallback to `blkid` on the mounted root device; verify UUID matches target disk in VM test |
-| ssh-agent user preset doesn't activate on first login | Verify with `systemctl --user is-enabled ssh-agent.service` after first login; fall back to manual enable |
+| ssh-agent user preset doesn't activate on first login | Preset deployed at build time via airootfs overlay (`etc/systemd/user-preset/`); verify with `systemctl --user is-enabled ssh-agent.service` after first login |
 | Secure Boot rejects custom ISO | CachyOS ISOs may ship with shim/MOK; custom hooks shouldn't affect this but test with SB enabled |
 
 ## Decisions (resolved)
