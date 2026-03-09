@@ -1,0 +1,13 @@
+[Unit]
+Description=ry-install first-boot validation
+After=multi-user.target
+ConditionPathExists=!/var/lib/ry-install-firstboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/ry-install-firstboot.sh
+ExecStartPost=/usr/bin/touch /var/lib/ry-install-firstboot-done
+
+[Install]
+WantedBy=multi-user.target

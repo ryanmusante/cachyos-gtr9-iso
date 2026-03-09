@@ -204,7 +204,7 @@ The `settings.conf` has an `exec:` list defining module execution order. You nee
 
 **Strategy:** Use a single wrapper script deployed via airootfs instead of inline YAML. Avoids fragile nested quoting in YAML and makes the logic testable independently.
 
-**File:** `archiso/airootfs/usr/local/bin/ry-install-post.sh` — see `overlay/usr/local/bin/ry-install-post.sh`
+**File:** `archiso/airootfs/usr/local/bin/ry-install-post.sh` — see `ry-install-post.sh`
 
 Key operations (in order):
 1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `blkid` if `findmnt` fails in chroot)
@@ -265,7 +265,7 @@ ExecStartPost=/usr/bin/touch /var/lib/ry-install-firstboot-done
 WantedBy=multi-user.target
 ```
 
-**File:** `archiso/airootfs/usr/local/bin/ry-install-firstboot.sh` — see `overlay/usr/local/bin/ry-install-firstboot.sh`
+**File:** `archiso/airootfs/usr/local/bin/ry-install-firstboot.sh` — see `ry-install-firstboot.sh`
 
 Enable the service in the overlay:
 
