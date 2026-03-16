@@ -1,0 +1,36 @@
+cachyos-gtr9-iso changelog
+==========================
+
+3.7.13 (2026-03-16)
+--------------------
+
+  * Bump all file headers and VERSION variable to 3.7.13
+  * Add shields.io badges to README (version, license, fish)
+  * Add CHANGELOG link to README header
+  * Sync setup.fish VERSION with badge and file headers
+  * Fix CRITICAL: setup.fish L595 fish syntax error — sed command used
+    bash-isms (${indent}, \$ end-of-line); rewrote with sed script file
+    to avoid Fish/sed quoting conflicts
+  * Fix HIGH: _warn/_err wrote to stdout; now route to stderr
+
+3.7.0 (2026-03-09)
+-------------------
+
+  * Initial release
+  * setup.fish: build-time ISO preparation script
+    - Extracts configs from running GTR9 Pro via ry-install.fish
+    - Injects @@KERNEL_PARAMS@@, @@MASK@@, @@PKGS_DEL@@ placeholders
+    - Validates ry-install version match
+    - Creates airootfs overlay structure
+  * ry-install-post.sh: Calamares shellprocess hook
+    - Generates /etc/kernel/cmdline with root UUID
+    - Masks 9 services/targets
+    - Enables 4 services
+    - Removes 7 conflicting packages
+    - Rebuilds initramfs and boot entries
+  * ry-install-firstboot.sh: first-boot validation
+    - Runs ry-install --verify-static
+    - Self-disables via ConditionPathExists sentinel
+  * ry-install-firstboot.service: systemd oneshot unit
+  * shellprocess-ry-install.conf: Calamares module config
+  * README.md: full implementation plan with phases, risks, maintenance
