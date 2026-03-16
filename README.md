@@ -56,12 +56,14 @@ mkdir -p archiso/airootfs/etc/udev/rules.d
 mkdir -p archiso/airootfs/etc/systemd/resolved.conf.d
 mkdir -p archiso/airootfs/etc/systemd/logind.conf.d
 mkdir -p archiso/airootfs/etc/systemd/system/multi-user.target.wants
+mkdir -p archiso/airootfs/etc/systemd/user-preset
 mkdir -p archiso/airootfs/etc/iwd
 mkdir -p archiso/airootfs/etc/NetworkManager/conf.d
 mkdir -p archiso/airootfs/etc/conf.d
 mkdir -p archiso/airootfs/etc/skel/.config/fish/conf.d
 mkdir -p archiso/airootfs/etc/skel/.config/environment.d
 mkdir -p archiso/airootfs/etc/skel/.config/systemd/user
+mkdir -p archiso/airootfs/etc/calamares/modules
 mkdir -p archiso/airootfs/usr/local/bin
 ```
 
@@ -207,12 +209,14 @@ The `settings.conf` has an `exec:` list defining module execution order. You nee
 **File:** `archiso/airootfs/usr/local/bin/ry-install-post.sh` — see `ry-install-post.sh`
 
 Key operations (in order):
-1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `/etc/fstab` parse if `findmnt` fails in chroot)
-2. Mask 9 services/targets (unconditional — no LVM guard needed for GTR9 Pro)
-3. Enable 4 services (amdgpu-performance, cpupower-epp, fstrim.timer, NM-dispatcher)
-4. Remove 7 conflicting packages (batch with per-package fallback)
+1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `/etc/fstab` parse if `findmnt` fails in chroot); read-back verification confirms UUID in written content
+2. Mask 9 services/targets (unconditional — no LVM guard needed for GTR9 Pro); logs count
+3. Enable 4 services (amdgpu-performance, cpupower-epp, fstrim.timer, NM-dispatcher); logs count
+4. Remove 7 conflicting packages (batch with per-package fallback); logs targets or "nothing to remove"
 5. Rebuild initramfs (`mkinitcpio -P`)
 6. Regenerate boot entries (`sdboot-manage gen` + `update`)
+
+All operations log to `/var/log/ry-install-post.log` with stdout/stderr separation preserved via `exec > >(tee) 2> >(tee >&2)`.
 
 **Note:** The post-install script uses `@@KERNEL_PARAMS@@`, `@@MASK@@`, and `@@PKGS_DEL@@` placeholders that `setup.fish` replaces at build time by extracting values from `ry-install.fish`. This keeps the bundle in sync automatically. Runtime guards abort if any placeholder is unreplaced.
 
@@ -248,6 +252,8 @@ exec:
 ### Task 9: Create first-boot validation service
 
 Handles post-boot validation: runs `ry-install --verify-static` to confirm config deployment. The ssh-agent user preset is deployed at build time via `airootfs/etc/systemd/user-preset/50-ry-install.preset` (not at first boot — systemd reads presets at user session start, so runtime creation would be too late).
+
+Logs to `/var/log/ry-install-firstboot.log` with the same `exec > >(tee) 2> >(tee >&2)` pattern as the post-install script. Uses separate `log()` (stdout) and `warn()` (stderr) functions. Warns explicitly if `ry-install.fish` is not found in PATH.
 
 **File:** `archiso/airootfs/etc/systemd/system/ry-install-firstboot.service`
 

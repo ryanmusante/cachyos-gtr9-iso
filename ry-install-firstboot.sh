@@ -4,7 +4,12 @@
 # v3.7.13 — 2026-03-16
 set -euo pipefail
 
+# Persistent log — consistent with ry-install-post.sh
+LOG="/var/log/ry-install-firstboot.log"
+exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
+
 log() { echo "[ry-install-firstboot] $*"; }
+warn() { echo "[ry-install-firstboot] WARN: $*" >&2; }
 
 # ssh-agent user preset is deployed at build time via airootfs overlay
 # (etc/systemd/user-preset/50-ry-install.preset) — no runtime creation needed.
@@ -12,10 +17,15 @@ log() { echo "[ry-install-firstboot] $*"; }
 # Run ry-install static verification if available
 if command -v ry-install.fish &>/dev/null; then
     log "Running ry-install --verify-static..."
-    ry-install.fish --verify-static 2>&1 || log "Verification reported issues (check output)"
+    if ! ry-install.fish --verify-static; then
+        warn "Verification reported issues (check output above)"
+    fi
+else
+    warn "ry-install.fish not found in PATH — skipping verification"
 fi
 
 # Disable self (belt and suspenders with ConditionPathExists)
 systemctl disable ry-install-firstboot.service 2>/dev/null || true
 
 log "First-boot complete"
+exit 0

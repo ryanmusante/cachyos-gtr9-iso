@@ -39,7 +39,18 @@ else
         warn "CRITICAL: /etc/kernel/cmdline not written — system may not boot"
     else
         echo "rw root=UUID=${UUID} ${PARAMS}" > /etc/kernel/cmdline
-        log "Written /etc/kernel/cmdline with UUID=$UUID"
+        # Read-back verification
+        if [ -f /etc/kernel/cmdline ]; then
+            WRITTEN=$(cat /etc/kernel/cmdline)
+            if [[ "$WRITTEN" == *"UUID=${UUID}"* ]]; then
+                log "Written /etc/kernel/cmdline with UUID=$UUID"
+            else
+                warn "CRITICAL: /etc/kernel/cmdline read-back mismatch"
+                warn "Expected UUID=$UUID, got: $WRITTEN"
+            fi
+        else
+            warn "CRITICAL: /etc/kernel/cmdline not created"
+        fi
     fi
 fi
 
@@ -49,17 +60,28 @@ MASK_LIST="@@MASK@@"
 if [[ "$MASK_LIST" == *"@@"* ]]; then
     warn "CRITICAL: MASK placeholder was not replaced by setup.fish"
 else
+    MASKED=0
     for svc in $MASK_LIST; do
-        systemctl mask "$svc" 2>/dev/null || warn "Failed to mask $svc"
+        if systemctl mask "$svc"; then
+            MASKED=$((MASKED + 1))
+        else
+            warn "Failed to mask $svc"
+        fi
     done
+    log "Masked $MASKED service(s)"
 fi
 
 # 3. Enable services
 log "Enabling services..."
-systemctl enable amdgpu-performance.service  || warn "Failed to enable amdgpu-performance"
-systemctl enable cpupower-epp.service        || warn "Failed to enable cpupower-epp"
-systemctl enable fstrim.timer                || warn "Failed to enable fstrim.timer"
-systemctl enable NetworkManager-dispatcher.service || warn "Failed to enable NM-dispatcher"
+ENABLED=0
+for svc in amdgpu-performance.service cpupower-epp.service fstrim.timer NetworkManager-dispatcher.service; do
+    if systemctl enable "$svc"; then
+        ENABLED=$((ENABLED + 1))
+    else
+        warn "Failed to enable $svc"
+    fi
+done
+log "Enabled $ENABLED/4 service(s)"
 
 # 4. Remove conflicting packages — injected by setup.fish at build time via @@PKGS_DEL@@ placeholder.
 # power-profiles-daemon moved to MASK in v3.1.0 (prevents dep reinstallation conflicts)
@@ -80,13 +102,16 @@ else
     PKGS_INSTALLED="${PKGS_INSTALLED# }"
 
     if [ -n "$PKGS_INSTALLED" ]; then
+        log "Installed targets: $PKGS_INSTALLED"
         # shellcheck disable=SC2086
-        if ! pacman -Rns --noconfirm $PKGS_INSTALLED 2>/dev/null; then
+        if ! pacman -Rns --noconfirm $PKGS_INSTALLED; then
             warn "Batch removal failed — falling back to per-package removal"
             for pkg in $PKGS_INSTALLED; do
-                pacman -Rns --noconfirm "$pkg" 2>/dev/null || warn "Failed to remove $pkg"
+                pacman -Rns --noconfirm "$pkg" || warn "Failed to remove $pkg"
             done
         fi
+    else
+        log "No conflicting packages installed — nothing to remove"
     fi
 fi
 

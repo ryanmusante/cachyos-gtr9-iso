@@ -13,37 +13,38 @@ set -g LOCKFILE "$SCRIPT_DIR/.setup.lock"
 
 set -g NO_COLOR (test -n "$NO_COLOR"; and echo true; or echo false)
 
+# All progress/status output targets stderr; check isatty stderr for color.
 function _c
     test "$NO_COLOR" = true; and return
-    isatty stdout; or return
+    isatty stderr; or return
     set_color $argv
 end
 
 function _info
-    _c blue; echo "  [INFO] $argv"; _c normal
+    begin; _c blue; echo "  [INFO] $argv"; _c normal; end >&2
 end
 
 function _ok
-    _c green; echo "  [OK]   $argv"; _c normal
+    begin; _c green; echo "  [OK]   $argv"; _c normal; end >&2
 end
 
 function _warn
-    _c yellow; echo "  [WARN] $argv" >&2; _c normal
+    begin; _c yellow; echo "  [WARN] $argv"; _c normal; end >&2
 end
 
 function _err
-    _c red; echo "  [FAIL] $argv" >&2; _c normal
+    begin; _c red; echo "  [FAIL] $argv"; _c normal; end >&2
 end
 
 function _step
-    _c cyan; echo ""; echo "══ $argv ══"; _c normal
+    begin; _c cyan; echo ""; echo "══ $argv ══"; _c normal; end >&2
 end
 
 # ── Options ─────────────────────────────────────────────
 
 argparse 'h/help' 'v/version' 'dry-run' 'force' -- $argv
 or begin
-    echo "Usage: setup.fish [--dry-run] [--force]"
+    echo "Usage: setup.fish [--dry-run] [--force]" >&2
     exit 2
 end
 
@@ -108,8 +109,17 @@ function _extract_fish_var --description "Extract a Fish global variable's value
     # _extract_fish_var VARNAME FILE
     # Extracts values from `set -g VARNAME val1 val2 \` (possibly multiline)
     # Returns space-separated string on stdout.
+    if test (count $argv) -lt 2
+        _err "_extract_fish_var: requires VARNAME FILE"
+        return 1
+    end
     set -l varname $argv[1]
     set -l srcfile $argv[2]
+
+    if not test -f "$srcfile"
+        _err "_extract_fish_var: file not found: $srcfile"
+        return 1
+    end
 
     # Write sed script to a temp file to avoid Fish/sed double-escaping issues.
     # Logic: find the declaration line, loop to collect backslash continuations,
@@ -264,15 +274,19 @@ set -l dirs \
     etc/calamares/modules \
     usr/local/bin
 
-for d in $dirs
-    if test "$DRY" = true
+# Batch: single mkdir call for all directories (avoids 17 sequential forks)
+if test "$DRY" = true
+    for d in $dirs
         _info "would mkdir: $AIROOTFS/$d"
-    else
-        mkdir -p "$AIROOTFS/$d"
     end
+else
+    set -l full_dirs
+    for d in $dirs
+        set -a full_dirs "$AIROOTFS/$d"
+    end
+    mkdir -p $full_dirs
 end
-set -l n (count $dirs)
-_ok "$n directories"
+_ok (count $dirs)" directories"
 
 # ── Step 3: Copy static configs from running system ─────
 
@@ -359,11 +373,12 @@ else
     _ok "symlink: firstboot → multi-user.target.wants"
 end
 
-# Make scripts executable
+# Batch: single chmod for all scripts (avoids 3 sequential forks)
 if test "$DRY" = false
-    chmod 755 "$AIROOTFS/usr/local/bin/ry-install-post.sh"
-    chmod 755 "$AIROOTFS/usr/local/bin/ry-install-firstboot.sh"
-    chmod 755 "$AIROOTFS/usr/local/bin/ry-install.fish"
+    chmod 755 \
+        "$AIROOTFS/usr/local/bin/ry-install-post.sh" \
+        "$AIROOTFS/usr/local/bin/ry-install-firstboot.sh" \
+        "$AIROOTFS/usr/local/bin/ry-install.fish"
     _ok "scripts marked executable"
 end
 
@@ -391,7 +406,7 @@ else
     set -l mask_list (_extract_fish_var MASK "$RY_INSTALL")
     set -l pkgs_del (_extract_fish_var PKGS_DEL "$RY_INSTALL")
 
-    # Validate extractions
+    # Validate extractions — batch check, single error exit
     set -l extract_ok true
     if test -z "$kernel_params"
         _err "Failed to extract KERNEL_PARAMS from $RY_INSTALL"
@@ -409,15 +424,19 @@ else
         exit 1
     end
 
-    # Inject into post script (| delimiter — no kernel params contain |)
-    sed -i "s|@@KERNEL_PARAMS@@|$kernel_params|" "$post_script"
-    sed -i "s|@@MASK@@|$mask_list|" "$post_script"
-    sed -i "s|@@PKGS_DEL@@|$pkgs_del|" "$post_script"
+    # Batch: single sed call for all 3 placeholder replacements
+    # (avoids 3 sequential reads + writes of the same file)
+    # | delimiter — no kernel params contain |
+    sed -i \
+        -e "s|@@KERNEL_PARAMS@@|$kernel_params|" \
+        -e "s|@@MASK@@|$mask_list|" \
+        -e "s|@@PKGS_DEL@@|$pkgs_del|" \
+        "$post_script"
 
     # Verify: no @@ placeholders remain
     if grep -q '@@.*@@' "$post_script"
         _err "Unreplaced placeholders found in post script:"
-        grep '@@.*@@' "$post_script" | head -5
+        grep '@@.*@@' "$post_script" | head -5 >&2
         exit 1
     end
 
@@ -467,23 +486,33 @@ else
         _info "would add to packages.x86_64: $pkgs_add"
         _info "would remove from packages.x86_64: $pkgs_del"
     else
-        # Add packages (skip if already present)
+        # Batch add: write candidates to temp, filter already-present, append remainder
+        set -l tmp_add (mktemp)
         set -l added 0
         for pkg in $pkgs_add
             if not grep -qx "$pkg" "$pkgfile"
-                echo "$pkg" >> "$pkgfile"
+                echo "$pkg" >> "$tmp_add"
                 set added (math $added + 1)
             end
         end
+        if test -s "$tmp_add"
+            cat "$tmp_add" >> "$pkgfile"
+        end
+        rm -f "$tmp_add"
         _ok "added $added packages"
 
-        # Comment out packages to remove
+        # Batch comment-out: single sed call with all patterns
+        # (avoids N sequential grep+sed passes over the file)
+        set -l sed_args
         set -l removed 0
         for pkg in $pkgs_del
             if grep -qx "$pkg" "$pkgfile"
-                sed -i "s/^$pkg\$/#$pkg/" "$pkgfile"
+                set -a sed_args -e "s/^$pkg\$/#$pkg/"
                 set removed (math $removed + 1)
             end
+        end
+        if test (count $sed_args) -gt 0
+            sed -i $sed_args "$pkgfile"
         end
         _ok "commented out $removed packages"
 
@@ -557,13 +586,13 @@ else
             else
                 _warn "could not find closing ) for file_permissions — add manually:"
                 for p in $perms
-                    echo "  $p"
+                    _info "$p"
                 end
             end
         else
             _warn "file_permissions not found in profiledef.sh — add manually:"
             for p in $perms
-                echo "  $p"
+                _info "$p"
             end
         end
     end
@@ -625,10 +654,10 @@ end
 
 _step "Summary"
 
-echo ""
+echo "" >&2
 if test "$DRY" = true
     _warn "DRY RUN complete — no changes were made"
-    echo ""
+    echo "" >&2
     _info "Re-run without --dry-run to execute"
 else
     _ok "ISO build tree ready at: $ISO_DIR"
@@ -671,3 +700,5 @@ else
     echo "       ry-install.fish --verify-runtime"
     echo "       ry-install.fish --diff"
 end
+
+exit 0

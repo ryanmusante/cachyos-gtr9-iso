@@ -8,10 +8,64 @@ cachyos-gtr9-iso changelog
   * Add shields.io badges to README (version, license, fish)
   * Add CHANGELOG link to README header
   * Sync setup.fish VERSION with badge and file headers
+  * Sync README Task 2 mkdir list with setup.fish (add etc/calamares/modules,
+    etc/systemd/user-preset — 17 total)
+  * Sync README Task 7 post-install description with code (read-back
+    verification, operation counters, persistent logging)
+  * Sync README Task 9 firstboot description with code (persistent log,
+    warn function, stream separation)
+
+  setup.fish:
   * Fix CRITICAL: setup.fish L595 fish syntax error — sed command used
     bash-isms (${indent}, \$ end-of-line); rewrote with sed script file
     to avoid Fish/sed quoting conflicts
-  * Fix HIGH: _warn/_err wrote to stdout; now route to stderr
+  * Fix CRITICAL: _c (set_color) wrote escape codes to stdout while
+    _warn/_err routed messages to stderr — color escapes corrupted stdout
+    pipe and stderr messages appeared uncolored; all output functions now
+    use `begin ... end >&2` block redirect with `isatty stderr` check
+  * Fix HIGH: _info, _ok, _step wrote progress to stdout — mixed with
+    script output (summary/next-steps); all progress now routes to stderr
+  * Fix HIGH: argparse error message wrote to stdout; now routes to stderr
+  * Fix MED: Step 2 mkdir — 17 sequential fork/exec calls; batched into
+    single `mkdir -p` with pre-built path list
+  * Fix MED: Step 4b sed — 3 sequential sed -i passes on same file;
+    batched into single `sed -i -e ... -e ... -e ...` call
+  * Fix MED: Step 5 package comment-out — N sequential grep+sed passes;
+    batched into single `sed -i` with accumulated `-e` expressions
+  * Fix MED: Step 5 package add — N sequential echo appends; batched
+    through temp file with single cat append
+  * Fix MED: chmod 755 on 3 files — 3 sequential calls; single chmod
+  * Fix MED: _extract_fish_var had no argument validation; added count
+    check and source file existence test with early return 1
+  * Fix LOW: Step 4b grep '@@.*@@' error output leaked to stdout; added
+    >&2 redirect on the grep output line
+  * Fix LOW: Summary section had orphaned blank lines on stdout between
+    stderr-only _step/_warn/_info calls; routed spacers to stderr
+  * Fix LOW: profiledef.sh fallback used bare echo to stdout; now uses
+    _info (stderr)
+  * Fix LOW: missing explicit exit 0 at end of script
+
+  ry-install-post.sh:
+  * Fix HIGH: systemctl mask suppressed stderr (2>/dev/null) — real errors
+    hidden; removed suppression, letting stderr flow through exec tee to
+    log naturally; added masked service counter
+  * Fix HIGH: pacman -Rns suppressed stderr (2>/dev/null) — dependency and
+    removal errors hidden; removed suppression
+  * Fix MED: /etc/kernel/cmdline had no post-write verification; added
+    read-back check asserting file exists and UUID present in content
+  * Fix MED: service enable had no counter; replaced 4 near-duplicate
+    lines with loop, counts ENABLED, logs "Enabled N/4"
+  * Fix LOW: empty PKGS_INSTALLED silently fell through with no log
+
+  ry-install-firstboot.sh:
+  * Fix HIGH: no persistent log file (inconsistent with post.sh); added
+    LOG=/var/log/ry-install-firstboot.log with exec redirect
+  * Fix MED: no warn() function; error conditions used log() which writes
+    to stdout; added warn() routing to stderr
+  * Fix MED: ry-install.fish --verify-static 2>&1 merged stderr into
+    stdout — lost stream separation; now uses if/else preserving streams
+  * Fix LOW: no log when ry-install.fish not found — silent skip; now warns
+  * Fix LOW: missing explicit exit 0
 
 3.7.0 (2026-03-09)
 -------------------
