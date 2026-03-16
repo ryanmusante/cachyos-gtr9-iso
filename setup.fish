@@ -28,11 +28,11 @@ function _ok
 end
 
 function _warn
-    _c yellow; echo "  [WARN] $argv"; _c normal
+    _c yellow; echo "  [WARN] $argv" >&2; _c normal
 end
 
 function _err
-    _c red; echo "  [FAIL] $argv"; _c normal
+    _c red; echo "  [FAIL] $argv" >&2; _c normal
 end
 
 function _step
@@ -591,10 +591,12 @@ else
             else if grep -qP '^\s*- bootloader\s*$' "$sf"
                 # Detect indentation from the existing bootloader line
                 set -l indent (grep -P '^\s*- bootloader\s*$' "$sf" | head -1 | sed 's/- bootloader.*//')
-                # Insert after first bootloader occurrence, matching existing indentation
-                sed -i "0,/^[[:space:]]*- bootloader[[:space:]]*\$/{/^[[:space:]]*- bootloader[[:space:]]*\$/a\\
-${indent}- shellprocess@ry-install
-}" "$sf"
+                # Insert after first bootloader occurrence, matching existing indentation.
+                # Write sed script to temp file to avoid Fish/sed quoting conflicts.
+                set -l sedscript (mktemp)
+                printf '0,/^[[:space:]]*- bootloader[[:space:]]*$/{/^[[:space:]]*- bootloader[[:space:]]*$/a\\\n%s- shellprocess@ry-install\n}' "$indent" > "$sedscript"
+                sed -i -f "$sedscript" "$sf"
+                rm -f "$sedscript"
                 _ok "inserted in: $sf"
             else
                 _warn "no bootloader entry found in: $sf"
