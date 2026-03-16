@@ -1,9 +1,9 @@
 #!/usr/bin/env fish
 # setup.fish — Prepare custom CachyOS ISO build tree
 # Requires: running GTR9 Pro with ry-install applied, git, sudo
-# v3.7.0 — 2026-03-09
+# v3.7.13 — 2026-03-16
 
-set -g VERSION "3.7.0"
+set -g VERSION "3.7.13"
 set -g SCRIPT_DIR (status dirname)
 set -g ISO_DIR "$SCRIPT_DIR/cachyos-custom-iso"
 set -g AIROOTFS "$ISO_DIR/archiso/airootfs"
@@ -437,7 +437,7 @@ if not test -f "$pkgfile"
     _warn "packages.x86_64 not found — check ISO repo structure"
     _warn "you may need to modify Calamares netinstall YAML instead"
 else
-    # v3.7.0: 13 packages (bat/eza removed in v3.6.4 — deps of cachyos-fish-config)
+    # v3.7.13: 13 packages (bat/eza removed in v3.6.4 — deps of cachyos-fish-config)
     set -l pkgs_add \
         bottom \
         cachyos-gaming-applications \
@@ -453,7 +453,7 @@ else
         sd \
         stress-ng
 
-    # v3.7.0: 7 packages (power-profiles-daemon moved to MASK)
+    # v3.7.13: 7 packages (power-profiles-daemon moved to MASK)
     set -l pkgs_del \
         btop \
         cachyos-micro-settings \

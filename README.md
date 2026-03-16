@@ -1,3 +1,5 @@
+![version](https://img.shields.io/badge/version-3.7.13-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
+
 # Custom CachyOS ISO Implementation Plan
 
 **Goal:** Build a custom CachyOS ISO that installs a fully-configured GTR9 Pro system — all 17 ry-install configs pre-applied, packages pre-selected, services pre-masked — with ry-install.fish bundled for ongoing maintenance.

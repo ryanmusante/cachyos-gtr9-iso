@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install first-boot validation
 # Runs once via ConditionPathExists, then self-disables
-# v3.7.0 — 2026-03-09
+# v3.7.13 — 2026-03-16
 set -euo pipefail
 
 log() { echo "[ry-install-firstboot] $*"; }
