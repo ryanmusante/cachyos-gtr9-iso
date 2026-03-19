@@ -1,6 +1,20 @@
 cachyos-gtr9-iso changelog
 ==========================
 
+3.7.14 (2026-03-19)
+--------------------
+
+  * Bump all file headers and VERSION variable to 3.7.14
+
+  setup.fish:
+  * Fix MED: Step 6 profiledef.sh insertion lacked idempotency guard —
+    running with --force re-added duplicate file_permissions entries;
+    added grep -q 'ry-install.fish' check (matches Steps 5 and 7 pattern)
+
+  README.md:
+  * Fix LOW: Task 9 duplicated multi-user.target.wants mkdir from Task 2;
+    removed duplicate, added "(directory already created in Task 2)" note
+
 3.7.13 (2026-03-16)
 --------------------
 

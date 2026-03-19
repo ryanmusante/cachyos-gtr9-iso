@@ -1,9 +1,9 @@
 #!/usr/bin/env fish
 # setup.fish — Prepare custom CachyOS ISO build tree
 # Requires: running GTR9 Pro with ry-install applied, git, sudo
-# v3.7.13 — 2026-03-16
+# v3.7.14 — 2026-03-19
 
-set -g VERSION "3.7.13"
+set -g VERSION "3.7.14"
 set -g SCRIPT_DIR (status dirname)
 set -g ISO_DIR "$SCRIPT_DIR/cachyos-custom-iso"
 set -g AIROOTFS "$ISO_DIR/archiso/airootfs"
@@ -562,6 +562,8 @@ else
 
     if test "$DRY" = true
         _info "would add 3 file_permissions entries to profiledef.sh"
+    else if grep -q 'ry-install.fish' "$profiledef"
+        _ok "file_permissions already present"
     else
         # Find the file_permissions associative array and its closing paren.
         # Scope the search to only lines AFTER file_permissions to avoid

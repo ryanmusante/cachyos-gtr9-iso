@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install Calamares post-install hook
 # Runs in chroot of installed system via shellprocess module
-# v3.7.13 — 2026-03-16
+# v3.7.14 — 2026-03-19
 set -euo pipefail
 
 # Log to persistent file for debugging; preserve stdout/stderr separation so

@@ -1,4 +1,4 @@
-![version](https://img.shields.io/badge/version-3.7.13-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
+![version](https://img.shields.io/badge/version-3.7.14-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
 
 # Custom CachyOS ISO Implementation Plan
 
@@ -275,10 +275,9 @@ WantedBy=multi-user.target
 
 **File:** `archiso/airootfs/usr/local/bin/ry-install-firstboot.sh` — see `ry-install-firstboot.sh`
 
-Enable the service in the overlay:
+Enable the service in the overlay (directory already created in Task 2):
 
 ```bash
-mkdir -p archiso/airootfs/etc/systemd/system/multi-user.target.wants
 ln -s /etc/systemd/system/ry-install-firstboot.service \
     archiso/airootfs/etc/systemd/system/multi-user.target.wants/ry-install-firstboot.service
 ```
