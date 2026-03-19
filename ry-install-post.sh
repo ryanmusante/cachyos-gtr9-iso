@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install Calamares post-install hook
 # Runs in chroot of installed system via shellprocess module
-# v3.7.14 — 2026-03-19
+# v3.8.0 — 2026-03-19
 set -euo pipefail
 
 # Log to persistent file for debugging; preserve stdout/stderr separation so
@@ -12,7 +12,14 @@ exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
 log() { echo "[ry-install-post] $*"; }
 warn() { echo "[ry-install-post] WARN: $*" >&2; }
 
-# 1. Generate /etc/kernel/cmdline (only file needing runtime UUID)
+# 1. Generate /etc/kernel/cmdline (runtime UUID + kernel params)
+# NOTE: sdboot-manage reads LINUX_OPTIONS from /etc/sdboot-manage.conf (static
+# overlay) for boot entry generation — it does NOT read /etc/kernel/cmdline.
+# This file is written for:
+#   - UKI compatibility (mkinitcpio reads it when building unified images)
+#   - Direct kernel boot fallback (systemd-boot reads it as last resort)
+#   - Diagnostic reference (ry-install --verify-runtime checks it)
+# Root UUID is NOT needed in LINUX_OPTIONS — sdboot-manage auto-detects it.
 log "Generating /etc/kernel/cmdline..."
 UUID=$(findmnt -no UUID / 2>/dev/null) || true
 # Fallback: parse /etc/fstab (written by Calamares before shellprocess runs)
@@ -52,6 +59,28 @@ else
             warn "CRITICAL: /etc/kernel/cmdline not created"
         fi
     fi
+fi
+
+# 1b. Verify LINUX_OPTIONS in /etc/sdboot-manage.conf (authoritative for boot entries)
+# The static overlay should already contain the correct LINUX_OPTIONS. This is a safety
+# net: if the overlay was stale or missing, inject params here so sdboot-manage gen (step 6)
+# produces correct boot entries.
+SDBOOT_CONF="/etc/sdboot-manage.conf"
+if [ -f "$SDBOOT_CONF" ]; then
+    CURRENT_OPTS=$(grep '^LINUX_OPTIONS=' "$SDBOOT_CONF" 2>/dev/null || true)
+    if [ -z "$CURRENT_OPTS" ]; then
+        warn "LINUX_OPTIONS not found in $SDBOOT_CONF — injecting from build-time params"
+        if [[ -n "${PARAMS:-}" && "$PARAMS" != *"@@"* ]]; then
+            echo "LINUX_OPTIONS=\"${PARAMS}\"" >> "$SDBOOT_CONF"
+            log "Appended LINUX_OPTIONS to $SDBOOT_CONF"
+        else
+            warn "No valid PARAMS available to inject"
+        fi
+    else
+        log "Verified: $CURRENT_OPTS"
+    fi
+else
+    warn "$SDBOOT_CONF not found — sdboot-manage gen may produce incomplete boot entries"
 fi
 
 # 2. Mask services — injected by setup.fish at build time via @@MASK@@ placeholder.

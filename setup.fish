@@ -1,9 +1,9 @@
 #!/usr/bin/env fish
 # setup.fish — Prepare custom CachyOS ISO build tree
 # Requires: running GTR9 Pro with ry-install applied, git, sudo
-# v3.7.14 — 2026-03-19
+# v3.8.0 — 2026-03-19
 
-set -g VERSION "3.7.14"
+set -g VERSION "3.8.0"
 set -g SCRIPT_DIR (status dirname)
 set -g ISO_DIR "$SCRIPT_DIR/cachyos-custom-iso"
 set -g AIROOTFS "$ISO_DIR/archiso/airootfs"
@@ -447,15 +447,24 @@ else
     _ok "injected: KERNEL_PARAMS=$kp_count, MASK=$mask_count, PKGS_DEL=$pkg_count"
 end
 
-# ── Step 5: Modify packages.x86_64 ─────────────────────
+# ── Step 5: Modify package list ─────────────────────────
 
-_step "Step 5: Modify packages.x86_64"
+_step "Step 5: Modify packages list"
 
-set -l pkgfile "$ISO_DIR/archiso/packages.x86_64"
-if not test -f "$pkgfile"
-    _warn "packages.x86_64 not found — check ISO repo structure"
+# CachyOS renamed packages.x86_64 → packages_desktop.x86_64 (circa early 2026).
+# buildiso.sh copies it to the standard archiso name during build, but setup.fish
+# runs before buildiso.sh, so detect whichever exists.
+set -l pkgfile ""
+if test -f "$ISO_DIR/archiso/packages_desktop.x86_64"
+    set pkgfile "$ISO_DIR/archiso/packages_desktop.x86_64"
+else if test -f "$ISO_DIR/archiso/packages.x86_64"
+    set pkgfile "$ISO_DIR/archiso/packages.x86_64"
+end
+if test -z "$pkgfile"
+    _warn "packages*.x86_64 not found — check ISO repo structure"
     _warn "you may need to modify Calamares netinstall YAML instead"
 else
+    _info "using "(basename $pkgfile)
     # v3.7.13: 13 packages (bat/eza removed in v3.6.4 — deps of cachyos-fish-config)
     set -l pkgs_add \
         bottom \
@@ -483,8 +492,8 @@ else
         ufw
 
     if test "$DRY" = true
-        _info "would add to packages.x86_64: $pkgs_add"
-        _info "would remove from packages.x86_64: $pkgs_del"
+        _info "would add to "(basename $pkgfile)": $pkgs_add"
+        _info "would remove from "(basename $pkgfile)": $pkgs_del"
     else
         # Batch add: write candidates to temp, filter already-present, append remainder
         set -l tmp_add (mktemp)
@@ -543,7 +552,7 @@ else
         # Write active packages, sorted
         grep -v '^#' "$pkgfile" | grep -v '^\s*$' | sort -u >> "$tmp"
         mv "$tmp" "$pkgfile"
-        _ok "sorted packages.x86_64"
+        _ok "sorted "(basename $pkgfile)
     end
 end
 
@@ -649,7 +658,7 @@ if test (count $netinstall_files) -gt 0
     end
     _warn "Review these files for PKGS_ADD/PKGS_DEL overlap"
 else
-    _ok "no netinstall configs found (packages.x86_64 only)"
+    _ok "no netinstall configs found (package list only)"
 end
 
 # ── Summary ─────────────────────────────────────────────

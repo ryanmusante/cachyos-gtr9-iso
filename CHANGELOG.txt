@@ -1,6 +1,39 @@
 cachyos-gtr9-iso changelog
 ==========================
 
+3.8.0 (2026-03-19)
+--------------------
+
+  * Bump all file headers and VERSION variable to 3.8.0
+
+  ry-install-post.sh:
+  * Fix: /etc/kernel/cmdline not read by sdboot-manage — sdboot-manage
+    uses LINUX_OPTIONS from /etc/sdboot-manage.conf for boot entries, not
+    /etc/kernel/cmdline. Added step 1b: verify LINUX_OPTIONS present in
+    sdboot-manage.conf after overlay copy, inject from build-time params
+    if missing. Kept cmdline generation for UKI compat and diagnostics.
+  * Add explanatory header comment for cmdline vs LINUX_OPTIONS
+
+  setup.fish:
+  * Fix: packages.x86_64 path hardcoded — CachyOS renamed to
+    packages_desktop.x86_64 (circa early 2026). Detect both names with
+    fallback. Log messages now use detected basename.
+  * Update Step 5 section comment to match step title
+
+  shellprocess-ry-install.conf:
+  * Add timeout budget comment (200s typical, 600s = 3x margin)
+
+  README.md:
+  * Sync inline shellprocess YAML with actual conf (add timeout comment)
+  * Sync all references to packages.x86_64 with rename awareness
+  * Sync "what belongs where" table with step 1b and package list rename
+  * Add risks: wireless-regdom auto-config, Limine default, sdboot-manage
+    repo archived, packages.x86_64 rename, cmdline not read by sdboot-manage
+  * Add decisions: #7 systemd-boot explicit, #8 plasma-login-manager,
+    #9 kernel params authority
+  * Update Task 7 key operations for step 1b
+  * Update maintenance section for package file rename
+
 3.7.14 (2026-03-19)
 --------------------
 

@@ -1,4 +1,4 @@
-![version](https://img.shields.io/badge/version-3.7.14-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
+![version](https://img.shields.io/badge/version-3.8.0-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
 
 # Custom CachyOS ISO Implementation Plan
 
@@ -18,9 +18,9 @@ ry-install.fish is a 7.5K-line post-install script with 17 embedded configs. Tod
 
 | Layer | What | Why |
 |-------|------|-----|
-| **Build-time** (packages.x86_64) | Package add/remove | Baked into squashfs, available in live env and installed system |
+| **Build-time** (package list) | Package add/remove | Baked into squashfs, available in live env and installed system |
 | **Build-time** (airootfs/) | 16 static config files (incl. 2 service units, 3 user files), ssh-agent user preset, wrapper scripts, ry-install.fish | Copied verbatim to installed root by Calamares |
-| **Calamares post-install** (shellprocess → wrapper script) | /etc/kernel/cmdline (needs UUID), service masking (9 units), service enable (4 services), package removal (7 packages), mkinitcpio -P, sdboot-manage | Runs in chroot of installed system before first boot; KERNEL_PARAMS, MASK, PKGS_DEL injected from ry-install.fish at build time |
+| **Calamares post-install** (shellprocess → wrapper script) | /etc/kernel/cmdline (needs UUID), LINUX_OPTIONS verification, service masking (9 units), service enable (4 services), package removal (7 packages), mkinitcpio -P, sdboot-manage | Runs in chroot of installed system before first boot; KERNEL_PARAMS, MASK, PKGS_DEL injected from ry-install.fish at build time |
 | **First-boot** (systemd oneshot) | ry-install --verify-static | Self-disabling after success; validates config deployment |
 
 ### Static vs dynamic configs
@@ -40,7 +40,7 @@ git checkout -b gtr9-pro
 ```
 
 Verify structure exists:
-- `archiso/packages.x86_64` — package list for live env + install
+- `archiso/packages.x86_64` (or `packages_desktop.x86_64`) — package list for live env + install
 - `archiso/airootfs/` — root filesystem overlay
 - `archiso/profiledef.sh` — build profile
 - `buildiso.sh` — build script
@@ -73,9 +73,9 @@ mkdir -p archiso/airootfs/usr/local/bin
 
 ## Phase 2: Package Customization
 
-### Task 3: Modify packages.x86_64
+### Task 3: Modify package list
 
-Open `archiso/packages.x86_64`. This is a newline-delimited list of packages.
+Open `archiso/packages.x86_64` (may be named `packages_desktop.x86_64` on CachyOS repos from early 2026+; `setup.fish` auto-detects both). This is a newline-delimited list of packages.
 
 **Add** (13 packages, one per line, alphabetical):
 ```
@@ -107,15 +107,15 @@ stress-ng
 
 **Note:** `power-profiles-daemon` is masked (not removed) to prevent dependency reinstallation conflicts. `pipewire-libcamera` is not listed — it's pulled automatically as a dependency. `bat` and `eza` are not listed — they're hard dependencies of `cachyos-fish-config` (installed by default on CachyOS desktops).
 
-**Verify:** Some of these may not be in the ISO package list (they might be installed by Calamares netinstall module instead). Check both `packages.x86_64` and any Calamares netinstall YAML files under `archiso/airootfs/etc/calamares/modules/` for the package lists.
+**Verify:** Some of these may not be in the ISO package list (they might be installed by Calamares netinstall module instead). Check both the package list file and any Calamares netinstall YAML files under `archiso/airootfs/etc/calamares/modules/` for the package lists.
 
-**CachyOS-specific note:** CachyOS may split packages between `packages.x86_64` (live env) and Calamares netinstall groups. Search for netinstall configs:
+**CachyOS-specific note:** CachyOS may split packages between the ISO package list (live env) and Calamares netinstall groups. Search for netinstall configs:
 ```bash
 find archiso/ -name 'netinstall*.yaml' -o -name 'netinstall*.conf' 2>/dev/null
 find archiso/ -path '*/calamares/*' -name '*.yaml' 2>/dev/null
 ```
 
-If CachyOS uses online package groups, you may need to modify those YAML files instead of (or in addition to) `packages.x86_64`.
+If CachyOS uses online package groups, you may need to modify those YAML files instead of (or in addition to) the package list file.
 
 ---
 
@@ -209,7 +209,8 @@ The `settings.conf` has an `exec:` list defining module execution order. You nee
 **File:** `archiso/airootfs/usr/local/bin/ry-install-post.sh` — see `ry-install-post.sh`
 
 Key operations (in order):
-1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `/etc/fstab` parse if `findmnt` fails in chroot); read-back verification confirms UUID in written content
+1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `/etc/fstab` parse if `findmnt` fails in chroot); read-back verification confirms UUID in written content. **Note:** sdboot-manage reads `LINUX_OPTIONS` from `/etc/sdboot-manage.conf` (static overlay) — not this file. The cmdline file is kept for UKI compatibility and diagnostics.
+1b. Verify `LINUX_OPTIONS` in `/etc/sdboot-manage.conf`; inject from build-time params if missing (safety net for stale overlays)
 2. Mask 9 services/targets (unconditional — no LVM guard needed for GTR9 Pro); logs count
 3. Enable 4 services (amdgpu-performance, cpupower-epp, fstrim.timer, NM-dispatcher); logs count
 4. Remove 7 conflicting packages (batch with per-package fallback); logs targets or "nothing to remove"
@@ -225,6 +226,8 @@ All operations log to `/var/log/ry-install-post.log` with stdout/stderr separati
 ```yaml
 ---
 dontChroot: false
+# Timeout budget: mkinitcpio ~120s + pacman ~30s + sdboot-manage ~10s + overhead ~40s
+# = ~200s typical, 600s provides 3x safety margin.
 script:
     - command: "/usr/local/bin/ry-install-post.sh"
       timeout: 600
@@ -360,6 +363,11 @@ ry-install.fish --diff           # Should show no drift
 | `findmnt -no UUID /` fails in chroot | Fallback to `blkid` on the mounted root device; verify UUID matches target disk in VM test |
 | ssh-agent user preset doesn't activate on first login | Preset deployed at build time via airootfs overlay (`etc/systemd/user-preset/`); verify with `systemctl --user is-enabled ssh-agent.service` after first login |
 | Secure Boot rejects custom ISO | CachyOS ISOs may ship with shim/MOK; custom hooks shouldn't affect this but test with SB enabled |
+| CachyOS auto-configures wireless-regdom from timezone (March 2026) | Static overlay may be overwritten on upgrade; verify regdom persists after `pacman -Syu` |
+| CachyOS defaults to Limine bootloader (Jan 2026) | Select systemd-boot explicitly in Calamares; document in install instructions |
+| `sdboot-manage` standalone repo archived (Oct 2025) | Reference `CachyOS-PKGBUILDS/systemd-boot-manager/` for current source |
+| `packages.x86_64` renamed to `packages_desktop.x86_64` upstream | setup.fish auto-detects both names (v3.8.0) |
+| `/etc/kernel/cmdline` not read by sdboot-manage for boot entries | Authoritative params are `LINUX_OPTIONS` in `/etc/sdboot-manage.conf` (static overlay); cmdline file kept for UKI compat and diagnostics; post.sh verifies LINUX_OPTIONS at install time (v3.8.0) |
 
 ## Decisions (resolved)
 
@@ -369,6 +377,9 @@ ry-install.fish --diff           # Should show no drift
 4. **Upstream base:** Latest stable tag at build time
 5. **power-profiles-daemon:** Masked, not removed — prevents dep reinstallation conflicts (v3.1.0)
 6. **LVM guard:** Removed — GTR9 Pro has no LVM; unconditional mask is simpler (v3.1.0)
+7. **Bootloader selection:** systemd-boot (explicit choice during Calamares install); Limine is new CachyOS default but project requires systemd-boot for sdboot-manage integration (v3.8.0)
+8. **Display manager:** plasma-login-manager is new CachyOS default (Jan 2026); no project impact — not customized (v3.8.0)
+9. **Kernel params authority:** `LINUX_OPTIONS` in `/etc/sdboot-manage.conf` is authoritative for boot entries; `/etc/kernel/cmdline` retained for UKI compatibility and `ry-install --verify-runtime` diagnostics (v3.8.0)
 
 ---
 
@@ -377,5 +388,5 @@ ry-install.fish --diff           # Should show no drift
 After initial build works:
 
 - **ry-install updates:** When you bump ry-install, copy the new script into the ISO tree and rebuild. The configs in `airootfs/` should match what ry-install generates — use `ry-install.fish --diff` on a running system as the source of truth.
-- **CachyOS upstream updates:** Periodically rebase your `gtr9-pro` branch on upstream master. Conflicts will be in `packages.x86_64` and Calamares configs.
+- **CachyOS upstream updates:** Periodically rebase your `gtr9-pro` branch on upstream master. Conflicts will be in `packages_desktop.x86_64` (or `packages.x86_64` on older tags) and Calamares configs.
 - **CI (optional):** CachyOS has `ci.build.sh` in their repo. Adapt for GitHub Actions to auto-build ISOs on push.

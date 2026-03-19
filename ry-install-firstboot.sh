@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install first-boot validation
 # Runs once via ConditionPathExists, then self-disables
-# v3.7.14 — 2026-03-19
+# v3.8.0 — 2026-03-19
 set -euo pipefail
 
 # Persistent log — consistent with ry-install-post.sh
