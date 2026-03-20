@@ -1,6 +1,41 @@
 cachyos-gtr9-iso changelog
 ==========================
 
+3.8.2 (2026-03-19)
+--------------------
+
+  * Bump all file headers and VERSION variable to 3.8.2
+
+  setup.fish:
+  * Fix MED: sed placeholder injection — added pipe-character guard on
+    extracted values before using | as sed delimiter; prevents silent
+    corruption if ry-install.fish values ever contain | (F11)
+  * Fix LOW: git checkout — second attempt (switch-only) now surfaces
+    stderr so diagnostic is visible on failure (F12)
+  * Fix LOW: package sort grep — added `; or true` to three grep
+    pipelines where zero matches is expected, making intent explicit
+    (F13, F14)
+  * Docs: _cp --sudo — comment documents that --sudo applies to cp
+    only, not mkdir; safe because destinations are user-owned (F10)
+
+  ry-install-post.sh:
+  * Docs: tee log — comment documents theoretical interleave risk
+    with two tee processes sharing one log file (F01)
+  * Docs: enable list — comment documents hardcoded coupling with
+    ry-install.fish enable list (F02)
+
+  ry-install-firstboot.sh:
+  * Docs: command -v — comment documents PATH-only check vs exec bit,
+    mitigated by setup.fish chmod and profiledef.sh (F04)
+
+  README.md:
+  * Docs: ry-install.fish line count changed to approximate (~7K+) to
+    prevent staleness (F20)
+  * Sync: Task 7 step 3 — note hardcoded enable list coupling with
+    ry-install.fish (matches post.sh F02 comment)
+  * Sync: Task 7 placeholder note — add pipe-character validation
+    mention for extracted values (matches setup.fish F11 guard)
+
 3.8.1 (2026-03-19)
 --------------------
 

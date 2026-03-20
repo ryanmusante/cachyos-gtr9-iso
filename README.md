@@ -1,4 +1,4 @@
-![version](https://img.shields.io/badge/version-3.8.1-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
+![version](https://img.shields.io/badge/version-3.8.2-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
 
 # Custom CachyOS ISO Implementation Plan
 
@@ -12,7 +12,7 @@
 
 ## Context
 
-ry-install.fish is a 7.5K-line post-install script with 17 embedded configs. Today the workflow is: install CachyOS from stock ISO → run ry-install.fish. The custom ISO eliminates that second step.
+ry-install.fish is a large (~7K+ line) post-install script with 17 embedded configs. Today the workflow is: install CachyOS from stock ISO → run ry-install.fish. The custom ISO eliminates that second step.
 
 ### What belongs where
 
@@ -212,14 +212,14 @@ Key operations (in order):
 1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `/etc/fstab` parse if `findmnt` fails in chroot); read-back verification confirms UUID in written content. **Note:** sdboot-manage reads `LINUX_OPTIONS` from `/etc/sdboot-manage.conf` (static overlay) — not this file. The cmdline file is kept for UKI compatibility and diagnostics.
 1b. Verify `LINUX_OPTIONS` in `/etc/sdboot-manage.conf`; inject from build-time params if missing or commented out (safety net for stale overlays)
 2. Mask 9 services/targets (unconditional — no LVM guard needed for GTR9 Pro); logs count
-3. Enable 4 services (amdgpu-performance, cpupower-epp, fstrim.timer, NM-dispatcher); logs count
+3. Enable 4 services (amdgpu-performance, cpupower-epp, fstrim.timer, NM-dispatcher); logs count. **Note:** enable list is hardcoded (unlike MASK/PKGS_DEL which are extracted from ry-install.fish) — update post.sh if the enable list changes.
 4. Remove 7 conflicting packages (batch with per-package fallback); logs targets or "nothing to remove"
 5. Rebuild initramfs (`mkinitcpio -P`)
 6. Regenerate boot entries (`sdboot-manage gen` + `update`)
 
 All operations log to `/var/log/ry-install-post.log` with stdout/stderr separation preserved via `exec > >(tee) 2> >(tee >&2)`. Log pipes are flushed before exit to prevent truncation.
 
-**Note:** The post-install script uses `@@KERNEL_PARAMS@@`, `@@MASK@@`, and `@@PKGS_DEL@@` placeholders that `setup.fish` replaces at build time by extracting values from `ry-install.fish`. This keeps the bundle in sync automatically. Runtime guards abort if any placeholder is unreplaced.
+**Note:** The post-install script uses `@@KERNEL_PARAMS@@`, `@@MASK@@`, and `@@PKGS_DEL@@` placeholders that `setup.fish` replaces at build time by extracting values from `ry-install.fish`. This keeps the bundle in sync automatically. Runtime guards abort if any placeholder is unreplaced. Extracted values are also validated to be free of the sed delimiter (`|`) before injection (v3.8.2).
 
 **File:** `archiso/airootfs/etc/calamares/modules/shellprocess-ry-install.conf`
 

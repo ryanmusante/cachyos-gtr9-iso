@@ -1,9 +1,9 @@
 #!/usr/bin/env fish
 # setup.fish — Prepare custom CachyOS ISO build tree
 # Requires: running GTR9 Pro with ry-install applied, git, sudo
-# v3.8.1 — 2026-03-19
+# v3.8.2 — 2026-03-19
 
-set -g VERSION "3.8.1"
+set -g VERSION "3.8.2"
 set -g SCRIPT_DIR (status dirname)
 set -g ISO_DIR "$SCRIPT_DIR/cachyos-custom-iso"
 set -g AIROOTFS "$ISO_DIR/archiso/airootfs"
@@ -76,6 +76,9 @@ end
 
 function _cp --description "Copy file with optional sudo, dry-run awareness"
     # _cp SOURCE DEST [--sudo]
+    # --sudo applies to the cp only (not mkdir). Safe because all current
+    # destinations are under user-owned $AIROOTFS. If reused for root-owned
+    # destinations, add sudo to the mkdir call below.
     set -l src $argv[1]
     set -l dst $argv[2]
     set -l use_sudo false
@@ -244,9 +247,11 @@ else
     or begin; _err "git clone failed"; exit 1; end
 
     cd "$ISO_DIR"
-    git checkout -b gtr9-pro 2>/dev/null
-    or git checkout gtr9-pro 2>/dev/null
-    or begin; _err "git checkout gtr9-pro failed"; exit 1; end
+    # Try create-and-switch, then switch-only; surface stderr only on final failure
+    if not git checkout -b gtr9-pro 2>/dev/null
+        git checkout gtr9-pro
+        or begin; _err "git checkout gtr9-pro failed (see git error above)"; exit 1; end
+    end
     cd "$SCRIPT_DIR"
     _ok "cloned and branched"
 end
@@ -424,9 +429,15 @@ else
         exit 1
     end
 
+    # Guard: reject values containing sed delimiter
+    if string match -q '*|*' -- "$kernel_params" "$mask_list" "$pkgs_del"
+        _err "Extracted values contain '|' — sed delimiter conflict"
+        exit 1
+    end
+
     # Batch: single sed call for all 3 placeholder replacements
     # (avoids 3 sequential reads + writes of the same file)
-    # | delimiter — no kernel params contain |
+    # | delimiter — values validated pipe-free above
     sed -i \
         -e "s|@@KERNEL_PARAMS@@|$kernel_params|" \
         -e "s|@@MASK@@|$mask_list|" \
@@ -545,12 +556,12 @@ else
         end
         # Write commented-out packages (lines starting with # that are NOT in the header)
         if test $header_end -gt 0
-            tail -n +"(math $header_end + 1)" "$pkgfile" | grep '^#' >> "$tmp"
+            tail -n +"(math $header_end + 1)" "$pkgfile" | grep '^#' >> "$tmp"; or true
         else
-            grep '^#' "$pkgfile" >> "$tmp"
+            grep '^#' "$pkgfile" >> "$tmp"; or true
         end
         # Write active packages, sorted
-        grep -v '^#' "$pkgfile" | grep -v '^\s*$' | sort -u >> "$tmp"
+        grep -v '^#' "$pkgfile" | grep -v '^\s*$' | sort -u >> "$tmp"; or true
         mv "$tmp" "$pkgfile"
         _ok "sorted "(basename $pkgfile)
     end

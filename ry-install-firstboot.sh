@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install first-boot validation
 # Runs once via ConditionPathExists, then self-disables
-# v3.8.1 — 2026-03-19
+# v3.8.2 — 2026-03-19
 set -euo pipefail
 
 # Persistent log — consistent with ry-install-post.sh
@@ -15,6 +15,8 @@ warn() { echo "[ry-install-firstboot] WARN: $*" >&2; }
 # (etc/systemd/user-preset/50-ry-install.preset) — no runtime creation needed.
 
 # Run ry-install static verification if available
+# NOTE: command -v checks PATH, not exec bit. setup.fish and profiledef.sh
+# both set 755, so this is safe. If the deploy pipeline changes, verify +x.
 if command -v ry-install.fish &>/dev/null; then
     log "Running ry-install --verify-static..."
     if ! ry-install.fish --verify-static; then

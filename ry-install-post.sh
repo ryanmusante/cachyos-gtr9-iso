@@ -1,11 +1,14 @@
 #!/bin/bash
 # ry-install Calamares post-install hook
 # Runs in chroot of installed system via shellprocess module
-# v3.8.1 — 2026-03-19
+# v3.8.2 — 2026-03-19
 set -euo pipefail
 
 # Log to persistent file for debugging; preserve stdout/stderr separation so
 # Calamares can distinguish info from errors.
+# NOTE: Two tee processes write to the same file — line interleaving is
+# theoretically possible under extreme load but negligible in practice
+# (line-buffered writes, low output volume).
 LOG="/var/log/ry-install-post.log"
 exec > >(tee -a "$LOG") 2> >(tee -a "$LOG" >&2)
 
@@ -101,6 +104,8 @@ else
 fi
 
 # 3. Enable services
+# NOTE: Enable list is hardcoded (unlike MASK/PKGS_DEL which are extracted from
+# ry-install.fish). If the enable list changes in ry-install.fish, update here too.
 log "Enabling services..."
 ENABLED=0
 for svc in amdgpu-performance.service cpupower-epp.service fstrim.timer NetworkManager-dispatcher.service; do
