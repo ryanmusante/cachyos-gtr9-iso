@@ -1,6 +1,40 @@
 cachyos-gtr9-iso changelog
 ==========================
 
+3.8.1 (2026-03-19)
+--------------------
+
+  * Bump all file headers and VERSION variable to 3.8.1
+
+  ry-install-post.sh:
+  * Fix HIGH: exec tee process substitution race — final log lines could
+    be lost before script exit; close stdout/stderr FDs and wait for tee
+    to flush before exit 0 (wait || true prevents set -e abort on tee
+    write failure)
+  * Fix MED: sdboot-manage update failure — restructured from one-liner
+    to if-block for clarity; kept as non-fatal warn (intentional —
+    Calamares bootloader module already installed the binary)
+  * Fix LOW: LINUX_OPTIONS verification grep now matches commented-out
+    variants (#LINUX_OPTIONS=), preventing duplicate injection if line
+    was commented for debugging
+
+  ry-install-firstboot.sh:
+  * Fix HIGH: exec tee process substitution race — same flush pattern
+    as post.sh
+  * Fix MED: systemctl disable stderr suppression — removed 2>/dev/null
+    so errors flow to log naturally via stderr tee; still non-fatal
+
+  setup.fish:
+  * Fix MED: NO_COLOR spec compliance — changed test -n to set -q per
+    no-color.org (handles NO_COLOR= empty-but-set case)
+  * Fix LOW: _extract_fish_var — added head -1 to prevent concatenation
+    if source file has multiple declarations of same variable
+
+  README.md:
+  * Sync step 1b description with broader LINUX_OPTIONS detection
+  * Sync log descriptions with tee flush behavior
+  * Sync risk table LINUX_OPTIONS row with v3.8.1 detection change
+
 3.8.0 (2026-03-19)
 --------------------
 

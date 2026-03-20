@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install first-boot validation
 # Runs once via ConditionPathExists, then self-disables
-# v3.8.0 — 2026-03-19
+# v3.8.1 — 2026-03-19
 set -euo pipefail
 
 # Persistent log — consistent with ry-install-post.sh
@@ -25,7 +25,9 @@ else
 fi
 
 # Disable self (belt and suspenders with ConditionPathExists)
-systemctl disable ry-install-firstboot.service 2>/dev/null || true
+systemctl disable ry-install-firstboot.service || true
 
 log "First-boot complete"
+exec 1>&- 2>&-
+wait || true
 exit 0

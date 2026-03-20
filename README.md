@@ -1,4 +1,4 @@
-![version](https://img.shields.io/badge/version-3.8.0-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
+![version](https://img.shields.io/badge/version-3.8.1-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.4%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
 
 # Custom CachyOS ISO Implementation Plan
 
@@ -210,14 +210,14 @@ The `settings.conf` has an `exec:` list defining module execution order. You nee
 
 Key operations (in order):
 1. Generate `/etc/kernel/cmdline` with root UUID (fallback: `/etc/fstab` parse if `findmnt` fails in chroot); read-back verification confirms UUID in written content. **Note:** sdboot-manage reads `LINUX_OPTIONS` from `/etc/sdboot-manage.conf` (static overlay) — not this file. The cmdline file is kept for UKI compatibility and diagnostics.
-1b. Verify `LINUX_OPTIONS` in `/etc/sdboot-manage.conf`; inject from build-time params if missing (safety net for stale overlays)
+1b. Verify `LINUX_OPTIONS` in `/etc/sdboot-manage.conf`; inject from build-time params if missing or commented out (safety net for stale overlays)
 2. Mask 9 services/targets (unconditional — no LVM guard needed for GTR9 Pro); logs count
 3. Enable 4 services (amdgpu-performance, cpupower-epp, fstrim.timer, NM-dispatcher); logs count
 4. Remove 7 conflicting packages (batch with per-package fallback); logs targets or "nothing to remove"
 5. Rebuild initramfs (`mkinitcpio -P`)
 6. Regenerate boot entries (`sdboot-manage gen` + `update`)
 
-All operations log to `/var/log/ry-install-post.log` with stdout/stderr separation preserved via `exec > >(tee) 2> >(tee >&2)`.
+All operations log to `/var/log/ry-install-post.log` with stdout/stderr separation preserved via `exec > >(tee) 2> >(tee >&2)`. Log pipes are flushed before exit to prevent truncation.
 
 **Note:** The post-install script uses `@@KERNEL_PARAMS@@`, `@@MASK@@`, and `@@PKGS_DEL@@` placeholders that `setup.fish` replaces at build time by extracting values from `ry-install.fish`. This keeps the bundle in sync automatically. Runtime guards abort if any placeholder is unreplaced.
 
@@ -256,7 +256,7 @@ exec:
 
 Handles post-boot validation: runs `ry-install --verify-static` to confirm config deployment. The ssh-agent user preset is deployed at build time via `airootfs/etc/systemd/user-preset/50-ry-install.preset` (not at first boot — systemd reads presets at user session start, so runtime creation would be too late).
 
-Logs to `/var/log/ry-install-firstboot.log` with the same `exec > >(tee) 2> >(tee >&2)` pattern as the post-install script. Uses separate `log()` (stdout) and `warn()` (stderr) functions. Warns explicitly if `ry-install.fish` is not found in PATH.
+Logs to `/var/log/ry-install-firstboot.log` with the same `exec > >(tee) 2> >(tee >&2)` pattern as the post-install script (log pipes flushed before exit). Uses separate `log()` (stdout) and `warn()` (stderr) functions. Warns explicitly if `ry-install.fish` is not found in PATH.
 
 **File:** `archiso/airootfs/etc/systemd/system/ry-install-firstboot.service`
 
@@ -367,7 +367,7 @@ ry-install.fish --diff           # Should show no drift
 | CachyOS defaults to Limine bootloader (Jan 2026) | Select systemd-boot explicitly in Calamares; document in install instructions |
 | `sdboot-manage` standalone repo archived (Oct 2025) | Reference `CachyOS-PKGBUILDS/systemd-boot-manager/` for current source |
 | `packages.x86_64` renamed to `packages_desktop.x86_64` upstream | setup.fish auto-detects both names (v3.8.0) |
-| `/etc/kernel/cmdline` not read by sdboot-manage for boot entries | Authoritative params are `LINUX_OPTIONS` in `/etc/sdboot-manage.conf` (static overlay); cmdline file kept for UKI compat and diagnostics; post.sh verifies LINUX_OPTIONS at install time (v3.8.0) |
+| `/etc/kernel/cmdline` not read by sdboot-manage for boot entries | Authoritative params are `LINUX_OPTIONS` in `/etc/sdboot-manage.conf` (static overlay); cmdline file kept for UKI compat and diagnostics; post.sh verifies LINUX_OPTIONS at install time, including commented-out variants (v3.8.0, v3.8.1) |
 
 ## Decisions (resolved)
 

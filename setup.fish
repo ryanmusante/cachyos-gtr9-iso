@@ -1,9 +1,9 @@
 #!/usr/bin/env fish
 # setup.fish — Prepare custom CachyOS ISO build tree
 # Requires: running GTR9 Pro with ry-install applied, git, sudo
-# v3.8.0 — 2026-03-19
+# v3.8.1 — 2026-03-19
 
-set -g VERSION "3.8.0"
+set -g VERSION "3.8.1"
 set -g SCRIPT_DIR (status dirname)
 set -g ISO_DIR "$SCRIPT_DIR/cachyos-custom-iso"
 set -g AIROOTFS "$ISO_DIR/archiso/airootfs"
@@ -11,7 +11,7 @@ set -g LOCKFILE "$SCRIPT_DIR/.setup.lock"
 
 # ── Colors ──────────────────────────────────────────────
 
-set -g NO_COLOR (test -n "$NO_COLOR"; and echo true; or echo false)
+set -g NO_COLOR (set -q NO_COLOR; and echo true; or echo false)
 
 # All progress/status output targets stderr; check isatty stderr for color.
 function _c
@@ -126,7 +126,7 @@ function _extract_fish_var --description "Extract a Fish global variable's value
     # strip the `set -g VARNAME` prefix, collapse newlines to spaces.
     set -l sedscript (mktemp)
     printf '/^[[:space:]]*set -g %s\\b/{\n:loop\n/\\\\[[:space:]]*$/{\nN\nb loop\n}\ns/^[[:space:]]*set -g %s[[:space:]]*//\ns/\\\\[[:space:]]*\\n/ /g\ns/^[[:space:]]*//\ns/[[:space:]]*$//\np\n}\n' "$varname" "$varname" > "$sedscript"
-    sed -nf "$sedscript" "$srcfile" | tr -s ' ' | sed 's/^ //; s/ $//'
+    sed -nf "$sedscript" "$srcfile" | head -1 | tr -s ' ' | sed 's/^ //; s/ $//'
     rm -f "$sedscript"
 end
 

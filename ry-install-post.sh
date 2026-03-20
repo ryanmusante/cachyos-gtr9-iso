@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install Calamares post-install hook
 # Runs in chroot of installed system via shellprocess module
-# v3.8.0 — 2026-03-19
+# v3.8.1 — 2026-03-19
 set -euo pipefail
 
 # Log to persistent file for debugging; preserve stdout/stderr separation so
@@ -67,7 +67,7 @@ fi
 # produces correct boot entries.
 SDBOOT_CONF="/etc/sdboot-manage.conf"
 if [ -f "$SDBOOT_CONF" ]; then
-    CURRENT_OPTS=$(grep '^LINUX_OPTIONS=' "$SDBOOT_CONF" 2>/dev/null || true)
+    CURRENT_OPTS=$(grep '^[#[:space:]]*LINUX_OPTIONS=' "$SDBOOT_CONF" 2>/dev/null || true)
     if [ -z "$CURRENT_OPTS" ]; then
         warn "LINUX_OPTIONS not found in $SDBOOT_CONF — injecting from build-time params"
         if [[ -n "${PARAMS:-}" && "$PARAMS" != *"@@"* ]]; then
@@ -161,7 +161,19 @@ if ! sdboot-manage gen; then
     warn "CRITICAL: sdboot-manage gen failed"
     exit 1
 fi
-sdboot-manage update || warn "sdboot-manage update failed"
+if ! sdboot-manage update; then
+    warn "sdboot-manage update failed — boot manager may be stale"
+fi
 
 log "Post-install complete"
+
+# Flush process-substitution tee pipes before exit so the log file
+# captures all output.  Without this, bash may exit before the
+# background tee processes drain their buffers.
+# Close both stdout and stderr inherited FDs to signal EOF to tee,
+# then wait for all background jobs to finish.  `|| true` prevents
+# set -e from aborting if a tee process exits non-zero (e.g. log
+# filesystem full) — the install itself already succeeded.
+exec 1>&- 2>&-
+wait || true
 exit 0
