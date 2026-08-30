@@ -1,0 +1,21 @@
+# remove from airootfs!
+# Registers the ry-install shellprocess module in the Calamares exec sequence.
+# The Calamares configuration ships in the cachyos-calamares-next package, not in
+# the ISO git tree, so it can only be patched once that package is on disk.
+# The marker comment above makes zzzz99-remove-custom-hooks delete this hook
+# again, keeping it out of the live environment.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = cachyos-calamares-next
+
+[Action]
+Description = Registering shellprocess@ry-install in the Calamares exec sequence...
+When = PostTransaction
+Depends = sh
+Depends = sed
+Depends = grep
+Depends = coreutils
+Exec = /bin/sh /usr/local/share/ry-install/ry-calamares-register.sh

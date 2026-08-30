@@ -1,6 +1,121 @@
 cachyos-gtr9-iso changelog
 ==========================
 
+7.195.0 (2026-08-30)
+--------------------
+
+  * Re-version the bundle from 3.8.2 to 7.195.0: this is a derivative of
+    the ry-install pair and mirrors its version. setup.fish asserts the
+    version of BOTH ry-install.fish and ry-verify.fish, which were split
+    into separate repositories after 7.189.0.
+  * Sync everything against ry-install/ry-verify 7.195.0. The bundle was
+    pinned to 3.8.2 and every interface it touched had moved.
+
+  Removed:
+  * ry-install-firstboot.sh and ry-install-firstboot.service: automated
+    verification is not possible. Both scripts refuse to run as root and
+    exit 2, and ry-verify's _ensure_sudo_cached refuses an interactive
+    sudo -v when stdin or stderr is not a TTY and returns 3. A root
+    systemd oneshot could only ever log a usage error. Verification moves
+    to a manual post-reboot step.
+  * The ssh-agent user preset and its skel files: ssh-agent.service and
+    10-ssh-auth-sock.fish are no longer in USER_DESTINATIONS.
+  * The @@KERNEL_PARAMS@@ / @@MASK@@ / @@PKGS_DEL@@ placeholder and sed
+    injection mechanism, replaced by a generated profile.env.
+
+  Added:
+  * 95-ry-install-calamares.hook and ry-calamares-register.sh: register
+    the shellprocess module from an airootfs pacman hook. The Calamares
+    configuration ships in cachyos-calamares-next and is not in the ISO
+    git tree, so the old Step 7 search for settings.conf in airootfs
+    could never match. The hook carries the upstream "remove from
+    airootfs" marker so zzzz99-remove-custom-hooks deletes it again.
+  * ry-verify.fish is now bundled alongside ry-install.fish.
+  * profile.env: generated manifest sourced by ry-install-post.sh, so the
+    hook script in the repo and on the ISO are byte-identical.
+
+  setup.fish:
+  * Fix CRITICAL: mode flags --verify-static, --verify-runtime, --diff and
+    --all do not exist. The CLI is ry-install.fish (no args, or
+    --install-file) and ry-verify.fish (--verify, --check).
+  * Fix CRITICAL: the 16-file static config list was stale in almost every
+    row. Paths are now derived from SYSTEM_DESTINATIONS and
+    USER_DESTINATIONS in ry-install.fish and the total is asserted against
+    _RY_MANAGED_FILE_COUNT (17 = 15 system + 2 user). Gone: iwd/main.conf,
+    amdgpu-performance.service, cpupower-epp.service, conf.d/wireless-
+    regdom. Renamed: sysctl.d/99-ry-sysctl.conf to 95-ry-overrides.conf,
+    udev 99-cachyos-udev.rules to 99-ry-perf.rules, modprobe.d
+    99-cachyos-modprobe.conf to 60-ry-modules.conf. New: nftables.conf,
+    bluetooth/main.conf, default/cpupower-service.conf, iw-regdomain,
+    NetworkManager-dispatcher.service.d/logging.conf, MangoHud.conf.
+  * Fix HIGH: _extract_fish_var captured trailing comment text. MASK,
+    PKGS_ADD and EXPECTED_SERVICES all carry a trailing "# ..." comment
+    today, which would have been injected into systemctl mask arguments.
+    Replaced by _ry_decl, which joins continuations in awk and strips a
+    trailing comment.
+  * Fix HIGH: _c returns 1 when isatty stderr fails, which propagated
+    through _ok and silently zeroed every "_cp ...; and set counter"
+    chain off a TTY. All message helpers now return 0 explicitly.
+  * Fix HIGH: status dirname is relative, and Step 1 did cd "$ISO_DIR"
+    then cd "$SCRIPT_DIR", never returning to the bundle. SCRIPT_DIR is
+    now absolute via realpath and the clone step uses git -C.
+  * Fix MED: _ry_decl and _ry_tokens ended on a string builtin, which
+    returns 1 when it changes nothing; a caller's "; or exit 1" read that
+    as an extraction failure. Both now end on printf plus return 0.
+  * Fix MED: fish collapses \\ to \ inside single quotes, so the awk
+    continuation regex arrived as an escaped bracket and never matched;
+    multi-line declarations (PKGS_ADD, SYSTEM_DESTINATIONS) extracted as
+    a bare backslash.
+  * Fix MED: _RY_MANAGED_FILE_COUNT is packed mid-line and cannot be read
+    by a line-anchored declaration matcher; read directly instead.
+  * Fix LOW: the hardcoded 13-package add list and 7-package remove list
+    are now extracted (17 and 9).
+  * Add: version lockstep across both scripts; RY_INSTALL_PATH and
+    RY_VERIFY_PATH environment overrides for locating the pair.
+  * Add: a ry-verify.fish --verify integrity gate before staging, so the
+    staged bytes are known to come from a clean host. --force bypasses it.
+  * Add: system configs are staged under usr/local/share/ry-install/system
+    instead of overlaid onto airootfs/etc and airootfs/boot. airootfs/boot
+    is the live ISO's boot directory, not the target ESP, and an /etc
+    overlay applies the profile to the live environment as well.
+  * Add: a fourth profiledef.sh file_permissions entry for the register
+    script; mkarchiso copies the overlay with --no-preserve=mode, so
+    file_permissions and not chmod is what sets the exec bit.
+  * Change: rm -rf on the ISO directory now passes --preserve-root --.
+
+  ry-install-post.sh:
+  * Rewritten around profile.env; no placeholder text remains.
+  * Add: install the 14 staged configs at 0644 with a per-file result
+    count, and warn when the installed count does not match the staged
+    count.
+  * Add: rewrite ext4 rows in /etc/fstab to noatime,lazytime,commit=10
+    using the same awk contract ry-install applies, backing up to
+    /etc/fstab.ry.bak. Calamares writes fstab before shellprocess runs,
+    so without this ry-verify reports drift on a fresh install.
+  * Add: remove /etc/mkinitcpio.conf.d/archiso.conf, which pins the live
+    HOOKS list and is sourced after /etc/mkinitcpio.conf.
+  * Add: pacman -D --asexplicit on the installed PKGS_ADD members before
+    the removal pass, mirroring ry-install, so -Rns cannot orphan one.
+  * Change: the enable list is no longer hardcoded. It comes from
+    EXPECTED_SERVICES (5 units) rather than the old 4-unit literal, which
+    named two units the profile no longer ships.
+  * Change: mask count is now 11, package removal 9, kernel tokens 14.
+  * Change: cmdline generation uses printf rather than echo and chmods
+    0644 explicitly.
+
+  shellprocess-ry-install.conf:
+  * Change: timeout 600 to 900. The budget now covers staged config
+    install, the fstab rewrite, pacman -Rns, mkinitcpio -P and
+    sdboot-manage; comment updated.
+
+  README.md:
+  * Rewritten. New sections: why the pair cannot run in the chroot, bundle
+    file roles, profile data extracted from 7.195.0 (17 managed files, 14
+    kernel tokens, 11 masked, 5 enabled, 17 added, 9 removed), and
+    troubleshooting. Risk table re-derived. Decisions 8 to 10 added for
+    staging, the removed first-boot service, and profile.env.
+
+
 3.8.2 (2026-03-19)
 --------------------
 
