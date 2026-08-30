@@ -1,7 +1,7 @@
 #!/usr/bin/env fish
 # setup.fish — Prepare a custom CachyOS ISO build tree carrying the GTR9 Pro profile
 # Requires: configured GTR9 Pro host, ry-install.fish + ry-verify.fish 7.195.0, git
-# v7.195.0 — 2026-08-30
+# v7.195.0 r1 — 2026-08-30
 
 set -g VERSION "7.195.0"
 set -g SCRIPT_DIR (command realpath -- (status dirname))
@@ -10,6 +10,8 @@ set -g AIROOTFS "$ISO_DIR/archiso/airootfs"
 set -g STAGE_REL "usr/local/share/ry-install"
 set -g LOCKFILE "$SCRIPT_DIR/.setup.lock"
 set -g ISO_REPO "https://github.com/CachyOS/CachyOS-Live-ISO.git"
+set -g LAUNCHER_REL "usr/local/bin/calamares-online.sh"
+set -g ROOT_STAGE_ABS "/$STAGE_REL"
 
 # ── Colors ──────────────────────────────────────────────
 
@@ -71,6 +73,9 @@ if set -q _flag_help
     echo "  RY_INSTALL_PATH  Path to ry-install.fish (default: search ~/ry-install, ..)"
     echo "  RY_VERIFY_PATH   Path to ry-verify.fish  (default: search ~/ry-verify, ..)"
     echo "  NO_COLOR         Disable colored output when set non-empty (no-color.org)"
+    echo ""
+    echo "Run from the bundle directory, on a configured GTR9 Pro whose host"
+    echo "verifies clean. Every list is extracted from ry-install.fish."
     exit 0
 end
 
@@ -131,12 +136,16 @@ function _ry_decl --description "Join one fish global declaration to a single li
         return 1
     end
 
+    # The comment strip runs per LINE, before the join: an inline comment on a
+    # non-final continuation line would otherwise swallow every token after it.
     set -l joined (command awk -v v="$varname" '
         BEGIN { pat = "^[ \t]*set -g ([-][-][ \t]+)?" v "[ \t]" }
         done { next }
-        !started && $0 ~ pat { started = 1; buf = $0 }
-        started {
-            if (buf != $0) buf = buf " " $0
+        !started && $0 !~ pat { next }
+        {
+            line = $0
+            sub(/[ \t]+#.*$/, "", line)
+            if (!started) { started = 1; buf = line } else { buf = buf " " line }
             if (buf ~ /\\\\[ \t]*$/) { sub(/\\\\[ \t]*$/, "", buf); next }
             print buf; done = 1
         }
@@ -149,7 +158,7 @@ function _ry_decl --description "Join one fish global declaration to a single li
 
     # Strip the `set -g [--] NAME` prefix, then any trailing ` # comment`.
     set -l body (string replace -r '^[ \t]*set -g ([-][-][ \t]+)?'"$varname"'[ \t]+' '' -- "$joined")
-    set body (string replace -r ' +#.*$' '' -- "$body")
+    set body (string replace -r ' +#.*$' '' -- "$body") # backstop; awk already stripped per line
     set body (string replace -a '"' '' -- "$body")
     set body (string trim -- (string replace -ra '[ \t]+' ' ' -- "$body"))
     # printf, not the string builtins: those return 1 when they change nothing,
@@ -176,7 +185,7 @@ if test "$DRY" = false
         _warn "removing stale lock (PID $lock_pid)"
         rm -f "$LOCKFILE"
     end
-    echo %self > "$LOCKFILE"
+    echo $fish_pid > "$LOCKFILE"
     function _cleanup_lock --on-event fish_exit
         rm -f "$LOCKFILE" 2>/dev/null
     end
@@ -187,9 +196,11 @@ end
 _step "Preflight checks"
 
 # Must run from the bundle directory
-if not test -f "$SCRIPT_DIR/ry-install-post.sh"
-    _err "Run from the bundle directory (ry-install-post.sh not found)"
-    exit 1
+for _f in ry-install-post.sh ry-install-stage.sh ry-calamares-register.sh shellprocess-ry-install.conf
+    if not test -f "$SCRIPT_DIR/$_f"
+        _err "Run from the bundle directory ($_f not found)"
+        exit 1
+    end
 end
 
 # Locate the pair — env override wins, then the usual checkout locations
@@ -259,6 +270,15 @@ _ok "$DST_TOTAL managed destinations ("(count $SYSTEM_DSTS)" system + "(count $U
 # /etc/kernel/cmdline carries the host root UUID — regenerated in the chroot, never staged
 set -g STAGE_SRCS (string match -v '/etc/kernel/cmdline' -- $SYSTEM_DSTS)
 
+# Payload scripts that must be executable in the live squashfs. profiledef.sh
+# file_permissions is what actually sets the bit (mkarchiso copies the overlay
+# with --no-preserve=mode); the chmod below only keeps the worktree honest.
+set -g EXEC_PAYLOAD ry-install-stage.sh ry-calamares-register.sh ry-install-post.sh ry-install.fish ry-verify.fish
+set -g EXEC_PAYLOAD_ABS
+for f in $EXEC_PAYLOAD
+    set -a EXEC_PAYLOAD_ABS "$AIROOTFS/$STAGE_REL/$f"
+end
+
 # Every managed destination must exist on the running host
 set -l missing 0
 for f in $SYSTEM_DSTS $USER_DSTS
@@ -325,12 +345,12 @@ end
 
 _step "Step 2: Create overlay directories"
 
-set -l dirs \
-    etc/pacman.d/hooks \
-    etc/skel/.config/environment.d \
-    etc/skel/.config/MangoHud \
-    usr/local/bin \
-    "$STAGE_REL/system"
+# Every directory is derived: the staging root plus one parent per user config.
+set -l dirs "$STAGE_REL/system" "$STAGE_REL/user"
+for f in $USER_DSTS
+    set -a dirs "$STAGE_REL/user/"(dirname (string replace -- "$HOME/" '' "$f"))
+end
+set dirs (printf '%s\n' $dirs | sort -u)
 
 if test "$DRY" = true
     for d in $dirs
@@ -359,40 +379,44 @@ for f in $STAGE_SRCS
 end
 _ok "$staged/"(count $STAGE_SRCS)" system configs staged"
 
-# User configs go to /etc/skel: Calamares creates the account before shellprocess
-# runs, so a chroot-time write to /etc/skel would land after the home was populated.
+# User configs ride in the payload rather than /etc/skel: ry-install-stage.sh
+# writes them into the new account's home at 0600 after the users module and the
+# stock shellprocess /etc/skel copy have both run. An /etc/skel overlay would
+# also land at whatever mode mkarchiso's `cp --no-preserve=mode` produced, and
+# ry-verify FAILs any USER_DESTINATIONS file that is not 0600.
 set -l skelled 0
 for f in $USER_DSTS
     set -l rel (string replace -- "$HOME/" '' "$f")
-    _cp "$f" "$AIROOTFS/etc/skel/$rel"
+    _cp "$f" "$AIROOTFS/$STAGE_REL/user/$rel"
     and set skelled (math $skelled + 1)
 end
-_ok "$skelled/"(count $USER_DSTS)" user configs placed in /etc/skel"
+_ok "$skelled/"(count $USER_DSTS)" user configs staged"
 
 if test (math $staged + $skelled) -lt (math (count $STAGE_SRCS) + (count $USER_DSTS))
-    _warn "some files missing — review output above"
+    _err "incomplete stage: "(math $staged + $skelled)" of "(math (count $STAGE_SRCS) + (count $USER_DSTS))" files copied"
+    _err "An ISO built from a partial stage installs an incomplete profile — refusing to continue"
+    exit 1
 end
 
 # ── Step 4: Bundle overlay files ────────────────────────
 
 _step "Step 4: Place bundle overlay files"
 
-_cp "$SCRIPT_DIR/ry-install-post.sh" "$AIROOTFS/usr/local/bin/ry-install-post.sh"
-_cp "$SCRIPT_DIR/ry-calamares-register.sh" "$AIROOTFS/$STAGE_REL/ry-calamares-register.sh"
-_cp "$SCRIPT_DIR/shellprocess-ry-install.conf" "$AIROOTFS/$STAGE_REL/shellprocess-ry-install.conf"
-_cp "$SCRIPT_DIR/95-ry-install-calamares.hook" "$AIROOTFS/etc/pacman.d/hooks/95-ry-install-calamares.hook"
+# Everything lives under the staging root. ry-install-stage.sh copies the tree
+# into the target and installs the three target-side scripts into
+# /usr/local/bin there; nothing goes to the live /usr/local/bin, because the
+# overlay reaches the live squashfs only and never the installed system.
+for f in ry-install-post.sh ry-install-stage.sh ry-calamares-register.sh shellprocess-ry-install.conf
+    _cp "$SCRIPT_DIR/$f" "$AIROOTFS/$STAGE_REL/$f"
+end
 
 # The pair itself — ry-verify is what the operator runs after the first reboot
-_cp "$RY_INSTALL" "$AIROOTFS/usr/local/bin/ry-install.fish"
-_cp "$RY_VERIFY" "$AIROOTFS/usr/local/bin/ry-verify.fish"
+_cp "$RY_INSTALL" "$AIROOTFS/$STAGE_REL/ry-install.fish"
+_cp "$RY_VERIFY" "$AIROOTFS/$STAGE_REL/ry-verify.fish"
 
 if test "$DRY" = false
-    chmod 755 \
-        "$AIROOTFS/usr/local/bin/ry-install-post.sh" \
-        "$AIROOTFS/usr/local/bin/ry-install.fish" \
-        "$AIROOTFS/usr/local/bin/ry-verify.fish" \
-        "$AIROOTFS/$STAGE_REL/ry-calamares-register.sh"
-    _ok "scripts marked executable"
+    chmod 755 $EXEC_PAYLOAD_ABS
+    _ok (count $EXEC_PAYLOAD)" payload scripts marked executable"
 end
 
 # ── Step 4b: Write the profile manifest ─────────────────
@@ -424,6 +448,8 @@ else
     printf '%s\n' \
         "# generated by setup.fish v$VERSION — do not edit" \
         "RY_VERSION='$VERSION'" \
+        "RY_STAGED_COUNT='"(count $STAGE_SRCS)"'" \
+        "RY_USER_COUNT='"(count $USER_DSTS)"'" \
         "RY_COUNTRY='$country'" \
         "RY_KERNEL_PARAMS='$kernel_params'" \
         "RY_MASK='$mask_list'" \
@@ -431,14 +457,18 @@ else
         "RY_PKGS_ADD='$pkgs_add'" \
         "RY_PKGS_DEL='$pkgs_del'" > "$PROFILE_ENV"
 end
-_ok "profile.env: KERNEL_PARAMS="(count (string split ' ' -- $kernel_params))", MASK="(count (string split ' ' -- $mask_list))", ENABLE="(count (string split ' ' -- $enable_list))", PKGS_ADD="(count (string split ' ' -- $pkgs_add))", PKGS_DEL="(count (string split ' ' -- $pkgs_del))
+_ok "profile.env: STAGED="(count $STAGE_SRCS)", USER="(count $USER_DSTS)", KERNEL_PARAMS="(count (string split ' ' -- $kernel_params))", MASK="(count (string split ' ' -- $mask_list))", ENABLE="(count (string split ' ' -- $enable_list))", PKGS_ADD="(count (string split ' ' -- $pkgs_add))", PKGS_DEL="(count (string split ' ' -- $pkgs_del))
 
 # ── Step 5: Modify package list ─────────────────────────
 
-_step "Step 5: Sync the ISO package list with PKGS_ADD / PKGS_DEL"
+_step "Step 5: Sync the live-environment package list with PKGS_ADD / PKGS_DEL"
 
-# CachyOS ships packages_desktop.x86_64; the older packages.x86_64 name is still
-# accepted here so an older checkout keeps working.
+# LIVE ENVIRONMENT ONLY. CachyOS installs online: the target is built by
+# pacstrap plus the netinstall selection, so this list never reaches it.
+# ry-install-post.sh installs PKGS_ADD and removes PKGS_DEL inside the chroot;
+# this step only makes the live/rescue environment match the profile.
+# CachyOS ships packages_desktop.x86_64 (copied to packages.x86_64 at build
+# time); the older name is still accepted so an older checkout keeps working.
 set -l pkgfile ""
 for cand in "$ISO_DIR/archiso/packages_desktop.x86_64" "$ISO_DIR/archiso/packages.x86_64"
     test -f "$cand"; and set pkgfile "$cand"; and break
@@ -513,15 +543,14 @@ set -l profiledef "$ISO_DIR/archiso/profiledef.sh"
 if not test -f "$profiledef"
     _warn "profiledef.sh not found"
 else
-    set -l perms \
-        '  ["/usr/local/bin/ry-install.fish"]="0:0:755"' \
-        '  ["/usr/local/bin/ry-verify.fish"]="0:0:755"' \
-        '  ["/usr/local/bin/ry-install-post.sh"]="0:0:755"' \
-        '  ["/usr/local/share/ry-install/ry-calamares-register.sh"]="0:0:755"'
+    set -l perms
+    for f in $EXEC_PAYLOAD
+        set -a perms '  ["/'"$STAGE_REL/$f"'"]="0:0:755"'
+    end
 
     if test "$DRY" = true
         _info "would add "(count $perms)" file_permissions entries to profiledef.sh"
-    else if grep -q 'ry-install.fish' "$profiledef"
+    else if grep -q 'ry-install' "$profiledef"
         _ok "file_permissions already present"
     else
         # Find the file_permissions array and the closing paren that follows it.
@@ -558,39 +587,78 @@ end
 
 # ── Step 7: Calamares registration ──────────────────────
 
-_step "Step 7: Register shellprocess@ry-install in Calamares"
+_step "Step 7: Patch calamares-online.sh to register shellprocess@ry-install"
 
-# The Calamares configuration is not in the ISO git tree — it arrives with the
-# cachyos-calamares-next package during the build. Patching it therefore happens
-# from a pacman hook in the airootfs, the same mechanism the upstream profile
-# uses for its own post-package fixups. The hook carries the
-# "remove from airootfs" marker so zzzz99-remove-custom-hooks removes it again.
+# The Calamares configuration cannot be patched at build time. Its settings
+# files ship at /usr/share/calamares/, not /etc/calamares/, and the live session
+# reinstalls cachyos-calamares-next before launching the installer, restoring
+# every package-owned file. What the live session does create is
+# /etc/calamares/settings.conf, copied from the package moments before calamares
+# is exec'd — so registration has to happen in that window, from the launcher
+# script itself. calamares-online.sh belongs to the ISO tree, not to a package,
+# so patching it here is durable.
+set -g LAUNCHER "$AIROOTFS/$LAUNCHER_REL"
+if not test -f "$LAUNCHER"
+    _err "$LAUNCHER_REL not found in the ISO tree — the upstream launcher moved"
+    _err "Register by hand: run ry-calamares-register.sh after settings.conf is written"
+    exit 1
+end
+
+set -l reg_call "    sudo /bin/sh $ROOT_STAGE_ABS/ry-calamares-register.sh"
+if grep -q 'ry-calamares-register' "$LAUNCHER"
+    _ok "launcher already patched"
+else if test "$DRY" = true
+    _info "would insert before the calamares exec in $LAUNCHER_REL:"
+    _info "$reg_call"
+else
+    set -l anchor (grep -n '^[[:space:]]*exec .*calamares' "$LAUNCHER" | head -1 | cut -d: -f1)
+    if test -z "$anchor"
+        _err "no 'exec ... calamares' line in $LAUNCHER_REL — register by hand"
+        exit 1
+    end
+    set -l tmp (mktemp)
+    printf '%s\n' "$reg_call" > "$tmp"
+    sed -i (math "$anchor - 1")" r $tmp" "$LAUNCHER"
+    rm -f "$tmp"
+    if grep -q 'ry-calamares-register' "$LAUNCHER"
+        _ok "patched $LAUNCHER_REL at line $anchor"
+        _info (grep -n -B1 -A1 'ry-calamares-register' "$LAUNCHER" | string collect)
+    else
+        _err "launcher patch did not take — register by hand"
+        exit 1
+    end
+end
+
+# A settings file inside the overlay would be a second, conflicting registration
+# point; upstream ships none, so finding one is worth a warning.
 set -l settings_files (find "$AIROOTFS" -name 'settings*.conf' -path '*/calamares/*' 2>/dev/null)
 if test (count $settings_files) -gt 0
     _warn "a Calamares settings file is already in the airootfs overlay:"
     for sf in $settings_files
         _info "  $sf"
     end
-    _warn "the pacman hook will still run — check for a double registration"
+    _warn "check for a double registration"
 else
-    _ok "no settings.conf in the tree (expected) — registration runs from the pacman hook"
+    _ok "no settings.conf in the overlay (expected)"
 end
-_info "hook: etc/pacman.d/hooks/95-ry-install-calamares.hook → cachyos-calamares-next"
-_info "verify after the build: grep -n shellprocess@ry-install in the build log"
 
 # ── Step 8: Also check for netinstall configs ───────────
 
 _step "Step 8: Check for Calamares netinstall configs"
 
+# Informational. The target's package set comes from pacstrap basePackages plus
+# the netinstall selection, and netinstall.conf fetches its group list from
+# GitHub before falling back to the local YAML — neither is patchable from here,
+# which is why ry-install-post.sh installs PKGS_ADD in the chroot.
 set -l netinstall_files (find "$AIROOTFS" -name 'netinstall*' -path '*/calamares/*' 2>/dev/null)
 if test (count $netinstall_files) -gt 0
-    _warn "Found Calamares netinstall configs — packages may be installed here too:"
+    _warn "Calamares netinstall configs in the overlay — a second package source:"
     for nf in $netinstall_files
         _info "  $nf"
     end
     _warn "Review these files for PKGS_ADD/PKGS_DEL overlap"
 else
-    _ok "no netinstall configs found (package list only)"
+    _ok "no netinstall configs in the overlay (target packages come from the chroot hook)"
 end
 
 # ── Summary ─────────────────────────────────────────────
@@ -622,12 +690,13 @@ else
     echo "    2. Install build deps:"
     echo "       sudo pacman -S --needed archiso mkinitcpio-archiso squashfs-tools grub"
     echo ""
-    echo "    3. Build the ISO:"
+    echo "    3. Build the ISO (buildiso.sh writes no log file — tee it):"
     echo "       cd $ISO_DIR"
-    echo "       ./buildiso.sh -p desktop -v"
+    echo "       ./buildiso.sh -p desktop -v 2>&1 | tee build.log"
     echo ""
-    echo "    4. Confirm the Calamares hook fired (build log):"
-    echo "       grep -n 'shellprocess@ry-install' \$(ls -t $ISO_DIR/*.log 2>/dev/null | head -1)"
+    echo "    4. Confirm the payload is in the squashfs:"
+    echo "       grep -n 'ry-install' build.log | head"
+    echo "       grep -n 'ry-calamares-register' archiso/$LAUNCHER_REL"
     echo ""
     echo "    5. Test in a VM first:"
     echo "       qemu-img create -f qcow2 test-disk.qcow2 40G"
@@ -638,7 +707,10 @@ else
     echo "           -cdrom $ISO_DIR/out/desktop/*.iso \\"
     echo "           -drive file=test-disk.qcow2,if=virtio,format=qcow2 -boot d"
     echo ""
-    echo "    6. After the install completes, reboot, then verify as your user:"
+    echo "    6. In the live session, before starting the installer, confirm:"
+    echo "       the installer window shows a step named 'Applying the GTR9 Pro profile'"
+    echo ""
+    echo "    7. After the install completes, reboot, then verify as your user:"
     echo "       /usr/local/bin/ry-verify.fish --verify"
     echo "       (root is refused by design; --verify needs an interactive sudo)"
     echo ""

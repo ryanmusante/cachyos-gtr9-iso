@@ -1,7 +1,7 @@
 #!/bin/bash
 # ry-install Calamares post-install hook
 # Runs as root in the chroot of the installed system via the shellprocess module
-# v7.195.0 — 2026-08-30
+# v7.195.0 r1 — 2026-08-30
 set -euo pipefail
 
 # Log to a persistent file for debugging; keep stdout/stderr separated so
@@ -29,7 +29,7 @@ fi
 . "$STAGE/profile.env"
 log "profile.env v${RY_VERSION:-unknown} loaded"
 
-for v in RY_KERNEL_PARAMS RY_MASK RY_ENABLE RY_PKGS_DEL; do
+for v in RY_KERNEL_PARAMS RY_MASK RY_ENABLE RY_PKGS_DEL RY_STAGED_COUNT; do
     if [ -z "${!v:-}" ]; then
         warn "CRITICAL: $v empty in profile.env"
         exit 1
@@ -43,6 +43,13 @@ done
 log "Installing staged configs from $SYSDIR..."
 if [ ! -d "$SYSDIR" ]; then
     warn "CRITICAL: $SYSDIR missing — no configs to install"
+    exit 1
+fi
+# setup.fish records how many configs it staged. Comparing against what is on
+# disk catches a truncated payload, which counting only what is found cannot.
+STAGED_FOUND=$(find "$SYSDIR" -type f | wc -l)
+if [ "$STAGED_FOUND" -ne "$RY_STAGED_COUNT" ]; then
+    warn "CRITICAL: staged config drift — profile.env declares $RY_STAGED_COUNT, found $STAGED_FOUND"
     exit 1
 fi
 INSTALLED=0
@@ -70,7 +77,10 @@ fi
 #   - Diagnostic reference (ry-verify --verify checks it)
 # The root UUID is not needed in LINUX_OPTIONS — sdboot-manage detects it.
 log "Generating /etc/kernel/cmdline..."
-UUID=$(findmnt -no UUID / 2>/dev/null) || true
+# ry-install-stage.sh resolves this outside the chroot and appends it to
+# profile.env. `findmnt -no UUID /` in here would read the live system's
+# mountinfo and answer for the ISO, so it is not consulted at all.
+UUID="${RY_ROOT_UUID:-}"
 # Fallback: parse /etc/fstab (written by Calamares before shellprocess runs).
 # Do NOT use `mount | awk` — inside the chroot it resolves the host root.
 if [ -z "$UUID" ]; then
@@ -113,6 +123,21 @@ if [ -f "$SDBOOT_CONF" ]; then
     fi
 else
     warn "$SDBOOT_CONF not found — sdboot-manage gen may produce incomplete entries"
+fi
+
+# 3b. Verify COUNTRY in /etc/iw-regdomain against profile.env
+# Same class of safety net as LINUX_OPTIONS above: catches a stale stage whose
+# regdomain byte no longer matches the value ry-install ships.
+if [ -n "${RY_COUNTRY:-}" ]; then
+    if [ -f /etc/iw-regdomain ]; then
+        if grep -q "^COUNTRY=${RY_COUNTRY}\$" /etc/iw-regdomain; then
+            log "Verified: /etc/iw-regdomain COUNTRY=$RY_COUNTRY"
+        else
+            warn "/etc/iw-regdomain does not carry COUNTRY=$RY_COUNTRY — stale stage?"
+        fi
+    else
+        warn "/etc/iw-regdomain not found — wireless regdomain not applied"
+    fi
 fi
 
 # 4. Apply the ext4 mount options ry-verify expects
@@ -171,7 +196,32 @@ if [ -f "$ARCHISO_MKI" ]; then
     log "Removed $ARCHISO_MKI (live-environment override)"
 fi
 
-# 6. Mask services
+# 6. Install the profile packages
+# An online CachyOS install builds the target with pacstrap plus the netinstall
+# selection; the ISO package list only ever reaches the live environment. The
+# profile's own packages therefore have to be installed here, before anything
+# enables a unit one of them owns or rebuilds an initramfs one of them feeds.
+if [ -n "${RY_PKGS_ADD:-}" ]; then
+    log "Installing profile packages..."
+    # shellcheck disable=SC2086
+    if ! pacman -S --needed --noconfirm -- $RY_PKGS_ADD; then
+        warn "Batch install failed — falling back to per-package install"
+        for pkg in $RY_PKGS_ADD; do
+            pacman -S --needed --noconfirm -- "$pkg" || warn "Failed to install $pkg"
+        done
+    fi
+    PKGS_MISSING=""
+    for pkg in $RY_PKGS_ADD; do
+        pacman -Qi "$pkg" &>/dev/null || PKGS_MISSING="$PKGS_MISSING $pkg"
+    done
+    if [ -n "$PKGS_MISSING" ]; then
+        warn "Not installed:${PKGS_MISSING}"
+    else
+        log "All profile packages installed"
+    fi
+fi
+
+# 7. Mask services
 log "Masking services..."
 MASKED=0
 # shellcheck disable=SC2086
@@ -185,7 +235,7 @@ for svc in $RY_MASK; do
 done
 log "Masked $MASKED service(s)"
 
-# 7. Enable services
+# 8. Enable services
 log "Enabling services..."
 ENABLED=0
 ENABLE_TOTAL=0
@@ -200,7 +250,7 @@ for svc in $RY_ENABLE; do
 done
 log "Enabled $ENABLED/$ENABLE_TOTAL service(s)"
 
-# 8. Re-mark the profile's own packages explicit, then remove the conflicting set
+# 9. Re-mark the profile's own packages explicit, then remove the conflicting set
 # Mirrors ry-install: -D --asexplicit first so a later -Rns cannot orphan a
 # PKGS_ADD member that arrived as someone else's dependency.
 if [ -n "${RY_PKGS_ADD:-}" ]; then
@@ -243,14 +293,14 @@ else
     log "No conflicting packages installed — nothing to remove"
 fi
 
-# 9. Rebuild the initramfs
+# 10. Rebuild the initramfs
 log "Rebuilding initramfs..."
 if ! mkinitcpio -P; then
     warn "CRITICAL: mkinitcpio failed — the system may not boot"
     exit 1
 fi
 
-# 10. Regenerate the boot entries
+# 11. Regenerate the boot entries
 log "Updating bootloader..."
 if ! command -v sdboot-manage &>/dev/null; then
     warn "CRITICAL: sdboot-manage not found"

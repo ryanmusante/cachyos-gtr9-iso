@@ -1,12 +1,12 @@
-![version](https://img.shields.io/badge/version-7.195.0-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.6%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
+![version](https://img.shields.io/badge/version-7.195.0%20r1-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.6%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
 
 # Custom CachyOS ISO — GTR9 Pro Profile
 
-**Goal:** build a CachyOS ISO that installs an already-configured Beelink GTR9 Pro — all 17 ry-install managed configs applied, packages pre-selected, services pre-masked — with `ry-install.fish` and `ry-verify.fish` bundled for ongoing maintenance.
+**Goal:** build a CachyOS ISO that installs an already-configured Beelink GTR9 Pro — all 17 ry-install managed configs applied, profile packages installed, conflicting packages removed, services masked and enabled — with `ry-install.fish` and `ry-verify.fish` on the target for ongoing maintenance.
 
-**Architecture:** clone CachyOS-Live-ISO, stage the profile inside archiso's `airootfs/` overlay, customize the package list at build time, and register a Calamares `shellprocess` module that applies the profile in the chroot of the installed system.
+**Architecture:** clone CachyOS-Live-ISO, put the whole profile payload in one staging directory inside archiso's `airootfs/` overlay, patch the live launcher so it registers a Calamares `shellprocess` module, and let that module copy the payload into the target and apply the profile there.
 
-**Version:** this bundle is a derivative of the ry-install pair and mirrors its version. Bundle 7.195.0 pairs with `ry-install.fish` 7.195.0 and `ry-verify.fish` 7.195.0, and `setup.fish` refuses to run against any other version unless `--force` is passed.
+**Version:** this bundle is a derivative of the ry-install pair and mirrors its version. Bundle 7.195.0 r1 pairs with `ry-install.fish` 7.195.0 and `ry-verify.fish` 7.195.0, and `setup.fish` refuses to run against any other version unless `--force` is passed.
 
 ---
 
@@ -38,21 +38,35 @@ Neither script can drive the Calamares stage, and this is by design in ry-instal
 
 | Constraint | Effect |
 |---|---|
-| Both scripts refuse to run as root and exit `2` | Calamares `shellprocess` runs as root in the chroot, so neither can be invoked there |
+| Both scripts refuse to run as root: `ry-install.fish` exits `2` in every mode, `ry-verify.fish` exits `2` except for `--check`, which exits `3` silently | Calamares `shellprocess` runs as root, so neither can be invoked there |
 | `ry-verify.fish --verify` calls `_ensure_sudo_cached`, which refuses an interactive `sudo -v` when stdin or stderr is not a TTY, and returns `3` | A first-boot systemd unit cannot verify either, whether it runs as root or drops to the user |
 | `ry-install.fish` resolves the root UUID, hard-gates on `EXPECTED_CPU_MATCH`, and takes a lock under `$HOME` | Even with the root guard bypassed, an unattended chroot run is not the intended path |
 
 So the profile is applied by `ry-install-post.sh`, a plain bash hook that replays what the install phases do, using bytes and lists extracted from `ry-install.fish` at build time. Verification stays a manual, post-reboot step in a terminal.
 
+### Why The Overlay Alone Is Not Enough
+
+CachyOS installs online. `calamares-online.sh` hardcodes `mode="online"`, and the online exec sequence is `pacstrap` plus `packages@online` — there is no `unpackfs` step. The airootfs overlay therefore reaches the live squashfs and stops there; the target root is built from packages, not copied from the ISO.
+
+Three consequences shape everything below.
+
+**The payload has to be carried across explicitly.** `ry-install-stage.sh` runs in the live system with Calamares' `${ROOT}` pointing at the mounted target, copies `/usr/local/share/ry-install/` into it, installs the three target-side scripts into `/usr/local/bin`, and then chroots into `ry-install-post.sh`.
+
+**Packages have to be installed in the chroot.** Editing `packages_desktop.x86_64` changes the live environment only. The target's package set comes from pacstrap `basePackages` plus the netinstall selection, and `netinstall.conf` fetches its group list from GitHub before falling back to the local YAML — neither is patchable from the build tree. `ry-install-post.sh` installs `PKGS_ADD` with `pacman -S --needed` before it enables any unit or rebuilds an initramfs.
+
+**The Calamares configuration cannot be patched at build time.** Its settings files ship at `/usr/share/calamares/`, not `/etc/calamares/`, and the live session runs `pacman -Sy --noconfirm cachyos-calamares-next` before launching the installer, which reinstalls the package and restores every file it owns. The one unowned file is `/etc/calamares/settings.conf`, which the launcher creates by copying the package's `settings_online.conf` moments before it execs Calamares. Registration happens in that window, from the launcher itself.
+
 ### What Belongs Where
 
 | Layer | What | Why |
 |---|---|---|
-| Build time, package list | `PKGS_ADD` appended, `PKGS_DEL` commented out | Baked into the squashfs, present in the live environment and on the installed system |
-| Build time, `airootfs/etc/skel/` | The 2 `USER_DESTINATIONS` files | Calamares creates the account before `shellprocess` runs, so a chroot-time write to `/etc/skel` would land after the home directory was populated |
-| Build time, `airootfs/usr/local/share/ry-install/` | The 14 staged system configs plus `profile.env` | Staged rather than overlaid: `airootfs/boot` is the live ISO's boot directory and not the target ESP, and an `/etc` overlay would also apply the profile to the live environment |
-| Build time, `airootfs/etc/pacman.d/hooks/` | Calamares registration hook | The Calamares configuration ships in `cachyos-calamares-next`, not in the ISO git tree, so it can only be patched once that package is on disk |
-| Calamares post-install, chroot | Staged config install, `/etc/kernel/cmdline`, fstab options, mask, enable, package removal, `mkinitcpio -P`, `sdboot-manage` | Everything that needs the target root UUID or a package database |
+| Build time, `airootfs/usr/local/share/ry-install/` | `system/` (14 staged configs), `user/` (2 user configs), `profile.env`, both scripts of the pair, the three hook scripts, the module config | One payload directory, copied into the target as a unit; nothing depends on the overlay reaching the installed system |
+| Build time, `airootfs/usr/local/bin/calamares-online.sh` | One inserted line calling `ry-calamares-register.sh` | The launcher is owned by the ISO tree, not by a package, so the patch survives the live reinstall |
+| Build time, `archiso/profiledef.sh` | Five `file_permissions` entries at `0:0:755` | `mkarchiso` copies the overlay with `cp -af --no-preserve=ownership,mode`, so `chmod` alone would not survive |
+| Build time, `archiso/packages_desktop.x86_64` | `PKGS_ADD` appended, `PKGS_DEL` commented out | Live and rescue environment only |
+| Live session, before Calamares starts | `ry-calamares-register.sh` writes the module config and registers the instance | `/etc/calamares/settings.conf` exists only from this point on |
+| Calamares exec, live side | `ry-install-stage.sh` copies the payload into `${ROOT}`, resolves the root UUID, chroots the hook, writes the user configs at `0600` | The root UUID and the target's `/etc/passwd` are both readable only from outside the chroot |
+| Calamares exec, target chroot | `ry-install-post.sh`: staged config install, `/etc/kernel/cmdline`, fstab options, package install and removal, mask, enable, `mkinitcpio -P`, `sdboot-manage` | Everything that needs the target's package database |
 | Post-reboot, manual | `ry-verify.fish --verify` | Needs a non-root user and an interactive sudo |
 
 ### Static Versus Dynamic Configs
@@ -65,14 +79,15 @@ Of the 17 managed files, 16 are fully static. Only `/etc/kernel/cmdline` needs t
 
 | File | Role |
 |---|---|
-| `setup.fish` | Build-time preparation. Clones the ISO repo, stages the profile, syncs the package list, patches `profiledef.sh`, installs the Calamares hook |
-| `ry-install-post.sh` | Calamares `shellprocess` hook. Runs as root in the chroot of the installed system |
-| `profile.env` | Generated by `setup.fish` into the airootfs; carries the extracted lists that `ry-install-post.sh` sources |
-| `shellprocess-ry-install.conf` | Calamares module config; `dontChroot: false`, timeout `900` |
-| `95-ry-install-calamares.hook` | Airootfs pacman hook that registers the module once `cachyos-calamares-next` is installed |
-| `ry-calamares-register.sh` | The hook's payload. Copies the module config and inserts `- shellprocess@ry-install` after `- bootloader` |
+| `setup.fish` | Build-time preparation. Clones the ISO repo, stages the payload, patches the launcher and `profiledef.sh`, syncs the live package list |
+| `ry-calamares-register.sh` | Live session. Installs the module config into `/etc/calamares/modules/` and adds both the `instances:` entry and the sequence entry to `/etc/calamares/settings.conf` |
+| `shellprocess-ry-install.conf` | Calamares module config; `dontChroot: true`, timeout `1800` |
+| `ry-install-stage.sh` | Calamares exec, live side. Copies the payload into `${ROOT}`, resolves the root UUID, chroots the hook, places the user configs |
+| `ry-install-post.sh` | Calamares exec, target chroot. Applies the profile |
+| `profile.env` | Generated by `setup.fish` into the payload; carries the extracted lists that `ry-install-post.sh` sources |
+| `LICENSE` | MIT, matching both repos of the pair |
 
-Nothing in this bundle hardcodes a path, a package name, a unit name or a kernel token. Every list is extracted from `ry-install.fish` at build time, and the destination count is asserted against `_RY_MANAGED_FILE_COUNT`.
+Nothing in this bundle hardcodes a managed path, a package name, a unit name or a kernel token. Every list is extracted from `ry-install.fish` at build time, the destination count is asserted against `_RY_MANAGED_FILE_COUNT`, and the staged count is asserted again in the chroot.
 
 ---
 
@@ -84,7 +99,7 @@ cd ~/cachyos-gtr9-iso
 ./setup.fish --dry-run          # preview
 ./setup.fish                    # prepare the build tree
 cd cachyos-custom-iso
-./buildiso.sh -p desktop -v     # build; the ISO lands in out/desktop/
+./buildiso.sh -p desktop -v 2>&1 | tee build.log
 ```
 
 `setup.fish` finds the pair via `RY_INSTALL_PATH` and `RY_VERIFY_PATH`, then falls back to `~/ry-install/ry-install.fish`, `~/ry-verify/ry-verify.fish`, and the bundle's parent directory.
@@ -99,21 +114,21 @@ cd cachyos-custom-iso
 
 **Step 1 — Clone.** `git clone` of CachyOS-Live-ISO into `./cachyos-custom-iso`, then a `gtr9-pro` branch.
 
-**Step 2 — Overlay directories.** Five directories under `airootfs/`: the pacman hooks directory, two `/etc/skel` config directories, `usr/local/bin`, and the staging root.
+**Step 2 — Overlay directories.** The staging root, its `system/` and `user/` subdirectories, and one derived parent per user config.
 
-**Step 3 — Stage the profile.** 14 system configs copied into `usr/local/share/ry-install/system/` with their absolute paths preserved as a relative tree; `/etc/kernel/cmdline` is skipped because it carries the host's root UUID. The 2 user configs go to `etc/skel/.config/`.
+**Step 3 — Stage the profile.** 14 system configs copied into `usr/local/share/ry-install/system/` with their absolute paths preserved as a relative tree; `/etc/kernel/cmdline` is skipped because it carries the host's root UUID. The 2 user configs go to `usr/local/share/ry-install/user/` under their home-relative paths. An incomplete stage is a hard failure: an ISO built from a partial payload installs an incomplete profile.
 
-**Step 4 — Bundle files.** `ry-install-post.sh`, `ry-install.fish` and `ry-verify.fish` into `usr/local/bin/`; the register script and module config into the staging root; the pacman hook into `etc/pacman.d/hooks/`.
+**Step 4 — Payload files.** `ry-install-post.sh`, `ry-install-stage.sh`, `ry-calamares-register.sh`, `shellprocess-ry-install.conf`, `ry-install.fish` and `ry-verify.fish` into the staging root.
 
-**Step 4b — `profile.env`.** `KERNEL_PARAMS`, `MASK`, `EXPECTED_SERVICES`, `PKGS_ADD`, `PKGS_DEL` and `COUNTRY` are extracted, comment-stripped, validated to contain no quote or `#`, and written single-quoted. This replaces the old `@@PLACEHOLDER@@` sed injection, so the hook script in the repo and the one on the ISO are byte-identical.
+**Step 4b — `profile.env`.** `KERNEL_PARAMS`, `MASK`, `EXPECTED_SERVICES`, `PKGS_ADD`, `PKGS_DEL` and `COUNTRY` are extracted, comment-stripped, validated to contain no quote or `#`, and written single-quoted alongside the staged and user counts. This replaces the old `@@PLACEHOLDER@@` sed injection, so the hook script in the repo and the one on the ISO are byte-identical.
 
-**Step 5 — Package list.** `PKGS_ADD` members not already present are appended to `packages_desktop.x86_64`; `PKGS_DEL` members present in the list are commented out; the file is re-sorted with its header comment block preserved. The older `packages.x86_64` name is still detected.
+**Step 5 — Live package list.** `PKGS_ADD` members not already present are appended to `packages_desktop.x86_64`; `PKGS_DEL` members present in the list are commented out; the file is re-sorted with its header comment block preserved. This is the live and rescue environment only — see [Why The Overlay Alone Is Not Enough](#why-the-overlay-alone-is-not-enough).
 
-**Step 6 — `profiledef.sh`.** Four `file_permissions` entries at `0:0:755`. The overlay copy in `mkarchiso` runs `cp -af --no-preserve=ownership,mode`, so `chmod` alone would not survive; `file_permissions` is what actually sets the exec bit.
+**Step 6 — `profiledef.sh`.** Five `file_permissions` entries at `0:0:755`, derived from the payload script list.
 
-**Step 7 — Calamares registration.** The airootfs pacman hook triggers on `cachyos-calamares-next` at `PostTransaction`, copies `shellprocess-ry-install.conf` into `/etc/calamares/modules/`, and inserts `- shellprocess@ry-install` after the first `- bootloader` line in every `/etc/calamares/settings*.conf`, matching the existing indentation. The hook carries the upstream `# remove from airootfs!` marker, so `zzzz99-remove-custom-hooks-from-airootfs.hook` deletes it again in the same transaction and it never reaches the live environment. The register script never exits non-zero, so a missing settings file cannot abort the pacstrap transaction.
+**Step 7 — Launcher patch.** One line inserted into `airootfs/usr/local/bin/calamares-online.sh`, immediately before the `exec ... calamares` line and therefore after that script has written `/etc/calamares/settings.conf`. It calls `ry-calamares-register.sh`, which copies the module config into `/etc/calamares/modules/` and inserts an `instances:` entry plus a `- shellprocess@ry-install` sequence entry immediately before `- umount`. That anchor exists in all three CachyOS settings variants and is the last exec step, so the profile lands after `bootloader`, `services-systemd`, the `/etc/skel` copy and every other `shellprocess` module.
 
-**Step 8 — Netinstall check.** Reports any Calamares netinstall configs found in the tree, which would be a second place packages are selected.
+**Step 8 — Netinstall check.** Reports any Calamares netinstall configs found in the overlay, which would be a second place packages are selected.
 
 ---
 
@@ -122,10 +137,12 @@ cd cachyos-custom-iso
 ```fish
 sudo pacman -S --needed archiso mkinitcpio-archiso squashfs-tools grub
 cd cachyos-custom-iso
-./buildiso.sh -p desktop -v
+./buildiso.sh -p desktop -v 2>&1 | tee build.log
 ```
 
-`buildiso.sh` copies `archiso/` into `build/`, then calls `mkarchiso`. Confirm the registration hook fired by grepping the build output for `shellprocess@ry-install`; the register script prints the patched lines.
+`buildiso.sh` copies `archiso/` into `build/`, then calls `mkarchiso`. The `-v` flag only makes `mkarchiso` verbose on the console; no log file is written, so tee it. The ISO lands in `out/desktop/`.
+
+Confirm the launcher patch survived into the tree with `grep -n ry-calamares-register archiso/usr/local/bin/calamares-online.sh`.
 
 ---
 
@@ -141,17 +158,17 @@ qemu-system-x86_64 -enable-kvm -m 8G -cpu host \
     -drive file=test-disk.qcow2,if=virtio,format=qcow2 -boot d
 ```
 
-Use `pflash` rather than `-bios` so UEFI variables persist and systemd-boot behaves as it will on hardware. In the VM the CPU will not match `EXPECTED_CPU_MATCH`, so `ry-verify.fish --verify` needs `RY_INSTALL_SKIP_HARDWARE_CHECK=1`; many runtime checks will still fail there because the virtual hardware is not a GTR9 Pro. The VM is a test of the install mechanics, not of the profile.
+Use `pflash` rather than `-bios` so UEFI variables persist and systemd-boot behaves as it will on hardware. The VM needs working networking: the install is online and the profile packages are pulled in the chroot. In the VM the CPU will not match `EXPECTED_CPU_MATCH`, so `ry-verify.fish --verify` needs `RY_INSTALL_SKIP_HARDWARE_CHECK=1`; many runtime checks will still fail there because the virtual hardware is not a GTR9 Pro. The VM is a test of the install mechanics, not of the profile.
 
 ---
 
 ## Phase 4: Install On The GTR9 Pro
 
 1. Select **systemd-boot** in the Calamares bootloader step. Limine is the current CachyOS default, and `sdboot-manage` integration requires systemd-boot.
-2. Complete the install. The `shellprocess` module runs after `bootloader`.
+2. Watch for a step named **Applying the GTR9 Pro profile** near the end of the exec sequence. If it never appears, registration did not happen — see [Troubleshooting](#troubleshooting).
 3. Do not reboot if the installer reported an error; read `/var/log/ry-install-post.log` on the target first.
 
-The hook, in order: sources `profile.env`, installs the 14 staged configs at `0644`, writes `/etc/kernel/cmdline` as `rw root=UUID=<detected>` plus the 14 kernel tokens with a read-back check, verifies `LINUX_OPTIONS` in `/etc/sdboot-manage.conf`, rewrites ext4 rows in `/etc/fstab` to `noatime,lazytime,commit=10` using the same contract `ry-install` applies, removes the live-only `/etc/mkinitcpio.conf.d/archiso.conf`, masks 11 units, enables 5, re-marks `PKGS_ADD` explicit, removes the 9 `PKGS_DEL` packages, runs `mkinitcpio -P`, then `sdboot-manage gen` and `update`.
+The hook, in order: copies the payload into the target and resolves the root UUID from outside the chroot, then inside the chroot sources `profile.env`, asserts the staged count, installs the 14 staged configs at `0644`, writes `/etc/kernel/cmdline` as `rw root=UUID=<detected>` plus the 14 kernel tokens with a read-back check, verifies `LINUX_OPTIONS` in `/etc/sdboot-manage.conf` and `COUNTRY` in `/etc/iw-regdomain`, rewrites ext4 rows in `/etc/fstab` to `noatime,lazytime,commit=10` using the same contract `ry-install` applies, removes the live-only `/etc/mkinitcpio.conf.d/archiso.conf`, installs the 17 `PKGS_ADD` packages, masks 11 units, enables 5, re-marks `PKGS_ADD` explicit, removes the 9 `PKGS_DEL` packages, runs `mkinitcpio -P`, then `sdboot-manage gen` and `update`. Back on the live side it places the 2 user configs in the new account's home at `0600`.
 
 ---
 
@@ -163,7 +180,7 @@ After the first boot, in a terminal, as your normal user:
 /usr/local/bin/ry-verify.fish --verify
 ```
 
-Root is refused with exit `2` and a non-TTY invocation is refused with exit `3`; both are by design. Exit codes are `0` clean, `1` verify FAIL, `2` usage, `3` preflight.
+Root is refused with exit `2` and a non-TTY invocation is refused with exit `3`; both are by design. Exit codes are `0` clean, `1` verify FAIL, `2` usage, `3` preflight, `10` check-mode drift.
 
 `--check` compares the live `/proc/cmdline`, so it reads `10` until the first reboot after the parameters change. That is expected on a fresh install and is not drift.
 
@@ -186,22 +203,22 @@ Extracted live from `ry-install.fish` 7.195.0. `setup.fish` re-extracts on every
 | # | Path | Handling |
 |---|---|---|
 | 1 | `/boot/loader/loader.conf` | staged, installed in the chroot |
-| 2 | `/etc/kernel/cmdline` | generated in the chroot from the detected root UUID |
+| 2 | `/etc/kernel/cmdline` | generated in the chroot from the root UUID resolved outside it |
 | 3 | `/etc/sdboot-manage.conf` | staged; `LINUX_OPTIONS` re-verified in the chroot |
 | 4 | `/etc/mkinitcpio.conf` | staged; `archiso.conf` override removed before `mkinitcpio -P` |
 | 5 | `/etc/systemd/resolved.conf.d/99-cachyos-resolved.conf` | staged |
 | 6 | `/etc/systemd/logind.conf.d/99-cachyos-logind.conf` | staged |
 | 7 | `/etc/systemd/system/NetworkManager-dispatcher.service.d/logging.conf` | staged |
 | 8 | `/etc/NetworkManager/conf.d/99-cachyos-nm.conf` | staged |
-| 9 | `/etc/iw-regdomain` | staged |
+| 9 | `/etc/iw-regdomain` | staged; `COUNTRY` re-verified in the chroot |
 | 10 | `/etc/bluetooth/main.conf` | staged |
 | 11 | `/etc/nftables.conf` | staged |
 | 12 | `/etc/default/cpupower-service.conf` | staged |
 | 13 | `/etc/sysctl.d/95-ry-overrides.conf` | staged |
 | 14 | `/etc/udev/rules.d/99-ry-perf.rules` | staged |
 | 15 | `/etc/modprobe.d/60-ry-modules.conf` | staged |
-| 16 | `~/.config/environment.d/10-environment.conf` | `/etc/skel` overlay |
-| 17 | `~/.config/MangoHud/MangoHud.conf` | `/etc/skel` overlay |
+| 16 | `~/.config/environment.d/10-environment.conf` | written into the new home at `0600` |
+| 17 | `~/.config/MangoHud/MangoHud.conf` | written into the new home at `0600` |
 
 ### Kernel Parameters
 
@@ -221,7 +238,7 @@ zswap.enabled=0
 
 **Enabled** (`EXPECTED_SERVICES`, 5) — `fstrim.timer`, `NetworkManager.service`, `cpupower.service`, `nftables.service`, `bluetooth.service`.
 
-The chroot uses plain `systemctl mask`, not `mask --now`: there is no running systemd to stop units with.
+The chroot uses plain `systemctl mask`, not `mask --now`: there is no running systemd to stop units with. Masking runs after `PKGS_ADD` is installed and after CachyOS's own `shellprocess@enable_ufw`, so nothing downstream re-enables a masked unit.
 
 ### Packages
 
@@ -229,7 +246,7 @@ The chroot uses plain `systemctl mask`, not `mask --now`: there is no running sy
 
 **Removed** (`PKGS_DEL`, 9) — `plymouth`, `cachyos-plymouth-bootanimation`, `cachyos-plymouth-theme`, `breeze-plymouth`, `plymouth-kcm`, `micro`, `cachyos-micro-settings`, `cachy-update`, `kdeconnect`.
 
-Removal happens in one `pacman -Rns` call so pacman resolves the order; a batch failure falls back to per-package removal. `PKGS_ADD` members are re-marked explicit first, so a removal cannot orphan one that arrived as somebody else's dependency.
+Installation happens first, so `nftables.service` exists to be enabled and `mkinitcpio-firmware` is present before the initramfs rebuild; a batch failure falls back to per-package installs and the result is re-checked with `pacman -Qi`. Removal happens in one `pacman -Rns` call so pacman resolves the order, with the same per-package fallback. `PKGS_ADD` members are re-marked explicit first, so a removal cannot orphan one that arrived as somebody else's dependency.
 
 ---
 
@@ -237,48 +254,57 @@ Removal happens in one `pacman -Rns` call so pacman resolves the order; a batch 
 
 | Risk | Mitigation |
 |---|---|
-| The ry-install pair moves and the bundle drifts | Version lockstep is asserted against both scripts; every list is extracted, never transcribed; the destination count is checked against `_RY_MANAGED_FILE_COUNT` |
+| The ry-install pair moves and the bundle drifts | Version lockstep is asserted against both scripts; every list is extracted, never transcribed; the destination count is checked against `_RY_MANAGED_FILE_COUNT` and the staged count is re-checked in the chroot |
 | The staged bytes came from a drifted host | `setup.fish` gates on `ry-verify.fish --verify` before staging |
-| CachyOS changes the Calamares module order | The register script anchors on the first `- bootloader` line and prints what it patched; check the build log |
-| `cachyos-calamares-next` is renamed or split | The hook stops firing and nothing is registered; the install then completes with no profile applied. Grep the build log for `shellprocess@ry-install` on every rebuild |
+| CachyOS moves or renames `calamares-online.sh` | `setup.fish` fails loudly at Step 7 when the launcher or its `exec ... calamares` line is absent |
+| CachyOS changes the Calamares module order | The register script anchors on `- umount`, the last exec step in all three settings variants, and prints what it patched |
+| The live session upgrades `cachyos-calamares-next` mid-session | Registration runs after the upgrade, against the `settings.conf` the launcher has just written, so an upgrade cannot revert it |
+| A `PKGS_ADD` member disappears from the CachyOS repos | The chroot install falls back to per-package installs and reports what is missing; the run continues so the system still boots |
 | A `PKGS_DEL` member is pulled in by a CachyOS meta-package | Check reverse dependencies with `pactree -r`; mask instead of remove, as `power-profiles-daemon` already is |
 | `mkinitcpio -P` fails in the chroot | Calamares binds `/proc` and `/sys` before `shellprocess`; the hook exits `1` on failure so the installer surfaces it |
-| `findmnt -no UUID /` fails in the chroot | Two fallbacks: parse `/etc/fstab`, then `blkid` on the device named there |
+| The root UUID cannot be resolved | `ry-install-stage.sh` resolves it from outside the chroot with `findmnt -no UUID -- ${ROOT}`; the hook then falls back to parsing `/etc/fstab`, then `blkid` on the device named there |
 | `/etc/mkinitcpio.conf.d/archiso.conf` survives onto the target | The hook removes it before `mkinitcpio -P`; it is sourced after `/etc/mkinitcpio.conf` and would otherwise pin the live HOOKS list |
 | Calamares rewrites `/etc/fstab` after `shellprocess` | The `fstab` module runs earlier in the exec sequence; the rewrite backs up to `/etc/fstab.ry.bak` and is idempotent |
+| The stock `shellprocess` `/etc/skel` copy overwrites the user configs | It runs earlier in the sequence; `ry-install-stage.sh` writes the user configs last, at `0600`, owned by the target account |
 | CachyOS defaults to Limine | Select systemd-boot explicitly during the install |
-| `packages.x86_64` renamed to `packages_desktop.x86_64` | Both names are detected |
+| `packages.x86_64` renamed to `packages_desktop.x86_64` | Both names are detected; `buildiso.sh` copies the desktop list to `packages.x86_64` at build time |
 | Secure Boot rejects the custom ISO | Test with Secure Boot enabled; the custom hooks do not touch shim or MOK |
-| Upstream ISO profile drifts from the fork | Rebase `gtr9-pro` periodically; conflicts land in `packages_desktop.x86_64` and `profiledef.sh` |
+| Upstream ISO profile drifts from the fork | Rebase `gtr9-pro` periodically; conflicts land in `packages_desktop.x86_64`, `profiledef.sh` and `calamares-online.sh` |
 
 ---
 
 ## Decisions
 
-1. **Live environment** — unchanged, stock CachyOS live environment, which doubles as a recovery system.
+1. **Live environment** — stock CachyOS live environment plus the profile's package list, which doubles as a recovery system.
 2. **Wi-Fi credentials** — not embedded; connect manually after the first boot.
 3. **Distribution** — personal use only.
 4. **Upstream base** — repository default branch at build time.
 5. **`power-profiles-daemon`** — masked, not removed, so dependency reinstallation cannot conflict.
 6. **Bootloader** — systemd-boot, chosen explicitly in Calamares; `sdboot-manage` integration requires it.
 7. **Kernel parameter authority** — `LINUX_OPTIONS` in `/etc/sdboot-manage.conf` is authoritative for boot entries; `/etc/kernel/cmdline` is retained for UKI compatibility, direct-boot fallback and diagnostics.
-8. **Configs staged, not overlaid** — see [What Belongs Where](#what-belongs-where).
+8. **Payload staged, not overlaid** — see [What Belongs Where](#what-belongs-where).
 9. **No first-boot service** — verification cannot run unattended, so there is nothing left for a first-boot unit to do.
 10. **`profile.env` instead of placeholders** — removes the sed-delimiter and unreplaced-placeholder failure classes entirely.
+11. **Registration from the launcher, not from a pacman hook** — a build-time hook can only patch files the Calamares package owns, and the live session restores all of them before the installer starts.
+12. **Profile packages installed in the chroot** — the ISO package list never reaches an online-installed target, so `pacman -S --needed` in the hook is the only place that works.
 
 ---
 
 ## Troubleshooting
 
-**The installer finished but nothing was applied.** The Calamares module was never registered. Grep the build log for `shellprocess@ry-install`; if the register script reported no `- bootloader` line, add `- shellprocess@ry-install` to the exec sequence by hand and rebuild.
+**The installer never showed an "Applying the GTR9 Pro profile" step.** Registration did not happen. In the live session check that `/usr/local/bin/calamares-online.sh` contains a `ry-calamares-register` line and that `/etc/calamares/settings.conf` contains `shellprocess@ry-install`. If the launcher line is missing, `setup.fish` Step 7 did not run against this build tree; if the line is there but the settings file is unpatched, run the register script by hand and start Calamares again.
 
 **`/var/log/ry-install-post.log` shows `profile.env missing`.** `setup.fish` did not complete Step 4b, or the staging directory was not copied into the squashfs. Re-run `setup.fish` and confirm `airootfs/usr/local/share/ry-install/profile.env` exists before building.
+
+**`/var/log/ry-install-post.log` shows `staged config drift`.** The payload on the ISO has fewer files than `profile.env` declares. Rebuild: `setup.fish` refuses to write a partial stage, so this means the squashfs, not the stage, is short.
 
 **The system does not boot after the install.** Boot the ISO, mount the target, and check `/etc/kernel/cmdline` and `/etc/sdboot-manage.conf`. The hook logs a `CRITICAL` line for every failure that can affect boot; all of them are in `/var/log/ry-install-post.log` on the target.
 
 **`ry-verify.fish --verify` exits 2.** It was run as root. Run it as your normal user; sudo is invoked internally.
 
 **`ry-verify.fish --verify` exits 3 with a sudo message.** It was run without a TTY, from a script or a systemd unit. Run it interactively.
+
+**Verification reports a permission FAIL on a user config.** The two `~/.config` files must be `0600` and owned by you. `ry-install-stage.sh` writes them that way; if they are `0644`, the stage step did not reach them and the stock `/etc/skel` copy is what you are looking at.
 
 **Verification reports fstab drift.** Confirm the ext4 rows carry `noatime,lazytime,commit=10` and no `defaults`, `relatime`, `atime` or `strictatime`. The pre-rewrite copy is at `/etc/fstab.ry.bak`.
 
@@ -287,6 +313,6 @@ Removal happens in one `pacman -Rns` call so pacman resolves the order; a batch 
 ## Maintenance
 
 - **When the pair is bumped:** update this bundle's `VERSION` in `setup.fish` and its file headers to match, then re-run `setup.fish --force` on a clean, verified host. Nothing else needs editing — the lists are extracted.
-- **When ry-install gains or loses a managed file:** nothing to edit. The destination list is derived and the count is asserted; a mismatch fails preflight loudly.
-- **When CachyOS updates the ISO profile:** rebase the `gtr9-pro` branch on upstream, then re-run `setup.fish --force`.
+- **When ry-install gains or loses a managed file:** nothing to edit. The destination list is derived and the count is asserted in two places; a mismatch fails preflight loudly.
+- **When CachyOS updates the ISO profile:** rebase the `gtr9-pro` branch on upstream, then re-run `setup.fish --force`. Re-read `calamares-online.sh` and the shipped `settings*.conf` if the build or the install behaves differently.
 - **Source of truth:** `ry-install.fish` for every list and every generated byte; `ry-verify.fish --verify` for whether the host those bytes came from is clean.

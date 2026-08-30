@@ -1,3 +1,123 @@
+7.195.0 r1 (2026-08-30)
+-----------------------
+
+  Content revision at the same pin: setup.fish still declares VERSION
+  7.195.0, because the version lockstep it asserts against the pair must
+  keep matching. Registration and delivery were rebuilt after checking
+  the bundle against CachyOS-Live-ISO master, mkarchiso and
+  cachyos-calamares-next 3.4.2-13 rather than against assumption.
+
+  Removed:
+  * ry-install-firstboot.sh and ry-install-firstboot.service. The 7.195.0
+    entry below already recorded them as removed and README decision 9
+    already said there is no first-boot service, but both files were
+    still shipping, still stamped v3.8.2, and still calling
+    ry-install.fish --verify-static. That flag does not exist: the
+    install argparse spec is h/help, v/version and install-file=.
+    setup.fish never staged either file, so neither could ever have run.
+  * 95-ry-install-calamares.hook. A build-time pacman hook cannot
+    register the module. Calamares ships its settings files at
+    /usr/share/calamares/, not /etc/calamares/, so the hook's search
+    matched nothing; and the live session runs pacman -Sy --noconfirm
+    cachyos-calamares-next before launching the installer, which
+    reinstalls the package and restores every file it owns. Any
+    build-time patch to a package-owned file is reverted before Calamares
+    starts.
+  * The etc/skel overlay. mkarchiso copies the airootfs with
+    cp -af --no-preserve=ownership,mode, so the two user configs landed
+    0644 and ry-verify's _vrs_installed_file_perms FAILs any
+    USER_DESTINATIONS file that is not 0600.
+
+  Added:
+  * ry-install-stage.sh, run by Calamares with dontChroot: true and
+    ${ROOT} pointing at the mounted target. An online CachyOS install
+    builds the target with pacstrap and never unpacks the squashfs, so
+    the airootfs overlay reaches the live environment only. The stage
+    script copies the payload into the target, installs the three
+    target-side scripts into /usr/local/bin, chroots the hook, and writes
+    the user configs into the new account's home at 0600.
+  * LICENSE, MIT, matching both repos of the pair.
+
+  setup.fish:
+  * Fix CRITICAL: register from calamares-online.sh instead of a pacman
+    hook. One line is inserted before that script's exec of calamares,
+    which is after it has written /etc/calamares/settings.conf. The
+    launcher belongs to the ISO tree rather than to a package, so the
+    patch survives the live reinstall. A missing launcher or missing
+    exec line is now a hard failure.
+  * Fix HIGH: user configs are staged into the payload, not into
+    etc/skel, and are written at 0600 by the stage script.
+  * Fix MED: an incomplete stage is now a hard failure. It used to warn
+    and then write profile.env and report success, so a partial payload
+    could reach an ISO.
+  * Fix MED: _ry_decl strips an inline comment per line, before joining
+    continuations. The old order stripped after the join, so a comment on
+    any non-final continuation line would have silently truncated the
+    array. PKGS_ADD carries its comment on the last line today, which is
+    the only reason the old form worked.
+  * Fix MED: the summary told the operator to grep a build log that
+    buildiso.sh never writes; -v only flips mkarchiso's quiet flag. The
+    printed command now tees the build output.
+  * Fix LOW: the lock file records $fish_pid rather than %self. fish 4.0
+    added the remove-percent-self feature flag; $fish_pid is fish 3.0 and
+    inside the declared 3.6 floor.
+  * Fix LOW: the two etc/skel directories were the only hardcoded paths
+    left. Overlay directories are now derived from USER_DESTINATIONS.
+  * Change: profiledef.sh file_permissions entries are derived from the
+    payload script list, five at 0:0:755, all under the staging root.
+  * Change: profile.env records RY_STAGED_COUNT and RY_USER_COUNT.
+  * Change: Step 5 is documented as live-environment only.
+
+  ry-install-post.sh:
+  * Fix CRITICAL: install PKGS_ADD in the chroot with pacman -S --needed
+    before enabling any unit or rebuilding the initramfs. The ISO package
+    list never reaches an online-installed target, whose package set
+    comes from pacstrap basePackages plus the netinstall selection, and
+    netinstall.conf fetches its group list from GitHub before falling
+    back to the local YAML. Without this, nftables.service did not exist
+    to be enabled and mkinitcpio-firmware was absent at mkinitcpio -P.
+    Batch failure falls back to per-package installs; the result is
+    re-checked with pacman -Qi.
+  * Fix HIGH: the root UUID comes from RY_ROOT_UUID, resolved by the
+    stage script outside the chroot. findmnt -no UUID / inside a chroot
+    reads the live system's mountinfo and answers for the ISO. The fstab
+    and blkid fallbacks are unchanged.
+  * Add: assert the staged file count against RY_STAGED_COUNT. Counting
+    only what is found cannot detect a truncated payload.
+  * Add: verify COUNTRY in /etc/iw-regdomain against profile.env, the
+    same class of stale-stage safety net as the LINUX_OPTIONS check.
+    RY_COUNTRY had been written to profile.env and never read.
+  * Change: step numbering now runs to 11 with package installation as
+    step 6.
+
+  shellprocess-ry-install.conf:
+  * Change: dontChroot false to true, and timeout 900 to 1800. The module
+    now drives the stage script, whose budget includes the chroot package
+    install.
+
+  ry-calamares-register.sh:
+  * Fix CRITICAL: target /etc/calamares/settings.conf, written by the
+    launcher, rather than a /etc/calamares/settings*.conf glob that never
+    matched.
+  * Fix CRITICAL: write an instances: entry as well as a sequence entry.
+    A custom instance needs both; every shellprocess module CachyOS ships
+    is declared that way, and the config file names are not derivable
+    from the instance ids.
+  * Change: anchor on - umount rather than - bootloader. It is present in
+    settings.conf, settings_online.conf and settings_offline.conf, and it
+    is the last exec step, so the profile lands after bootloader,
+    services-systemd, the etc/skel copy and shellprocess@enable_ufw.
+
+  README.md:
+  * Rewritten around the delivery path that works: why the overlay alone
+    is not enough, what belongs where, and the launcher patch. Bundle
+    files, risk table, decisions 11 and 12, and troubleshooting all
+    re-derived.
+
+  CHANGELOG.txt:
+  * Convert to ASCII, matching both repos of the pair.
+
+
 cachyos-gtr9-iso changelog
 ==========================
 
@@ -122,33 +242,33 @@ cachyos-gtr9-iso changelog
   * Bump all file headers and VERSION variable to 3.8.2
 
   setup.fish:
-  * Fix MED: sed placeholder injection — added pipe-character guard on
+  * Fix MED: sed placeholder injection - added pipe-character guard on
     extracted values before using | as sed delimiter; prevents silent
     corruption if ry-install.fish values ever contain | (F11)
-  * Fix LOW: git checkout — second attempt (switch-only) now surfaces
+  * Fix LOW: git checkout - second attempt (switch-only) now surfaces
     stderr so diagnostic is visible on failure (F12)
-  * Fix LOW: package sort grep — added `; or true` to three grep
+  * Fix LOW: package sort grep - added `; or true` to three grep
     pipelines where zero matches is expected, making intent explicit
     (F13, F14)
-  * Docs: _cp --sudo — comment documents that --sudo applies to cp
+  * Docs: _cp --sudo - comment documents that --sudo applies to cp
     only, not mkdir; safe because destinations are user-owned (F10)
 
   ry-install-post.sh:
-  * Docs: tee log — comment documents theoretical interleave risk
+  * Docs: tee log - comment documents theoretical interleave risk
     with two tee processes sharing one log file (F01)
-  * Docs: enable list — comment documents hardcoded coupling with
+  * Docs: enable list - comment documents hardcoded coupling with
     ry-install.fish enable list (F02)
 
   ry-install-firstboot.sh:
-  * Docs: command -v — comment documents PATH-only check vs exec bit,
+  * Docs: command -v - comment documents PATH-only check vs exec bit,
     mitigated by setup.fish chmod and profiledef.sh (F04)
 
   README.md:
   * Docs: ry-install.fish line count changed to approximate (~7K+) to
     prevent staleness (F20)
-  * Sync: Task 7 step 3 — note hardcoded enable list coupling with
+  * Sync: Task 7 step 3 - note hardcoded enable list coupling with
     ry-install.fish (matches post.sh F02 comment)
-  * Sync: Task 7 placeholder note — add pipe-character validation
+  * Sync: Task 7 placeholder note - add pipe-character validation
     mention for extracted values (matches setup.fish F11 guard)
 
 3.8.1 (2026-03-19)
@@ -157,27 +277,27 @@ cachyos-gtr9-iso changelog
   * Bump all file headers and VERSION variable to 3.8.1
 
   ry-install-post.sh:
-  * Fix HIGH: exec tee process substitution race — final log lines could
+  * Fix HIGH: exec tee process substitution race - final log lines could
     be lost before script exit; close stdout/stderr FDs and wait for tee
     to flush before exit 0 (wait || true prevents set -e abort on tee
     write failure)
-  * Fix MED: sdboot-manage update failure — restructured from one-liner
-    to if-block for clarity; kept as non-fatal warn (intentional —
+  * Fix MED: sdboot-manage update failure - restructured from one-liner
+    to if-block for clarity; kept as non-fatal warn (intentional -
     Calamares bootloader module already installed the binary)
   * Fix LOW: LINUX_OPTIONS verification grep now matches commented-out
     variants (#LINUX_OPTIONS=), preventing duplicate injection if line
     was commented for debugging
 
   ry-install-firstboot.sh:
-  * Fix HIGH: exec tee process substitution race — same flush pattern
+  * Fix HIGH: exec tee process substitution race - same flush pattern
     as post.sh
-  * Fix MED: systemctl disable stderr suppression — removed 2>/dev/null
+  * Fix MED: systemctl disable stderr suppression - removed 2>/dev/null
     so errors flow to log naturally via stderr tee; still non-fatal
 
   setup.fish:
-  * Fix MED: NO_COLOR spec compliance — changed test -n to set -q per
+  * Fix MED: NO_COLOR spec compliance - changed test -n to set -q per
     no-color.org (handles NO_COLOR= empty-but-set case)
-  * Fix LOW: _extract_fish_var — added head -1 to prevent concatenation
+  * Fix LOW: _extract_fish_var - added head -1 to prevent concatenation
     if source file has multiple declarations of same variable
 
   README.md:
@@ -191,7 +311,7 @@ cachyos-gtr9-iso changelog
   * Bump all file headers and VERSION variable to 3.8.0
 
   ry-install-post.sh:
-  * Fix: /etc/kernel/cmdline not read by sdboot-manage — sdboot-manage
+  * Fix: /etc/kernel/cmdline not read by sdboot-manage - sdboot-manage
     uses LINUX_OPTIONS from /etc/sdboot-manage.conf for boot entries, not
     /etc/kernel/cmdline. Added step 1b: verify LINUX_OPTIONS present in
     sdboot-manage.conf after overlay copy, inject from build-time params
@@ -199,7 +319,7 @@ cachyos-gtr9-iso changelog
   * Add explanatory header comment for cmdline vs LINUX_OPTIONS
 
   setup.fish:
-  * Fix: packages.x86_64 path hardcoded — CachyOS renamed to
+  * Fix: packages.x86_64 path hardcoded - CachyOS renamed to
     packages_desktop.x86_64 (circa early 2026). Detect both names with
     fallback. Log messages now use detected basename.
   * Update Step 5 section comment to match step title
@@ -224,7 +344,7 @@ cachyos-gtr9-iso changelog
   * Bump all file headers and VERSION variable to 3.7.14
 
   setup.fish:
-  * Fix MED: Step 6 profiledef.sh insertion lacked idempotency guard —
+  * Fix MED: Step 6 profiledef.sh insertion lacked idempotency guard -
     running with --force re-added duplicate file_permissions entries;
     added grep -q 'ry-install.fish' check (matches Steps 5 and 7 pattern)
 
@@ -240,32 +360,32 @@ cachyos-gtr9-iso changelog
   * Add CHANGELOG link to README header
   * Sync setup.fish VERSION with badge and file headers
   * Sync README Task 2 mkdir list with setup.fish (add etc/calamares/modules,
-    etc/systemd/user-preset — 17 total)
+    etc/systemd/user-preset - 17 total)
   * Sync README Task 7 post-install description with code (read-back
     verification, operation counters, persistent logging)
   * Sync README Task 9 firstboot description with code (persistent log,
     warn function, stream separation)
 
   setup.fish:
-  * Fix CRITICAL: setup.fish L595 fish syntax error — sed command used
+  * Fix CRITICAL: setup.fish L595 fish syntax error - sed command used
     bash-isms (${indent}, \$ end-of-line); rewrote with sed script file
     to avoid Fish/sed quoting conflicts
   * Fix CRITICAL: _c (set_color) wrote escape codes to stdout while
-    _warn/_err routed messages to stderr — color escapes corrupted stdout
+    _warn/_err routed messages to stderr - color escapes corrupted stdout
     pipe and stderr messages appeared uncolored; all output functions now
     use `begin ... end >&2` block redirect with `isatty stderr` check
-  * Fix HIGH: _info, _ok, _step wrote progress to stdout — mixed with
+  * Fix HIGH: _info, _ok, _step wrote progress to stdout - mixed with
     script output (summary/next-steps); all progress now routes to stderr
   * Fix HIGH: argparse error message wrote to stdout; now routes to stderr
-  * Fix MED: Step 2 mkdir — 17 sequential fork/exec calls; batched into
+  * Fix MED: Step 2 mkdir - 17 sequential fork/exec calls; batched into
     single `mkdir -p` with pre-built path list
-  * Fix MED: Step 4b sed — 3 sequential sed -i passes on same file;
+  * Fix MED: Step 4b sed - 3 sequential sed -i passes on same file;
     batched into single `sed -i -e ... -e ... -e ...` call
-  * Fix MED: Step 5 package comment-out — N sequential grep+sed passes;
+  * Fix MED: Step 5 package comment-out - N sequential grep+sed passes;
     batched into single `sed -i` with accumulated `-e` expressions
-  * Fix MED: Step 5 package add — N sequential echo appends; batched
+  * Fix MED: Step 5 package add - N sequential echo appends; batched
     through temp file with single cat append
-  * Fix MED: chmod 755 on 3 files — 3 sequential calls; single chmod
+  * Fix MED: chmod 755 on 3 files - 3 sequential calls; single chmod
   * Fix MED: _extract_fish_var had no argument validation; added count
     check and source file existence test with early return 1
   * Fix LOW: Step 4b grep '@@.*@@' error output leaked to stdout; added
@@ -277,10 +397,10 @@ cachyos-gtr9-iso changelog
   * Fix LOW: missing explicit exit 0 at end of script
 
   ry-install-post.sh:
-  * Fix HIGH: systemctl mask suppressed stderr (2>/dev/null) — real errors
+  * Fix HIGH: systemctl mask suppressed stderr (2>/dev/null) - real errors
     hidden; removed suppression, letting stderr flow through exec tee to
     log naturally; added masked service counter
-  * Fix HIGH: pacman -Rns suppressed stderr (2>/dev/null) — dependency and
+  * Fix HIGH: pacman -Rns suppressed stderr (2>/dev/null) - dependency and
     removal errors hidden; removed suppression
   * Fix MED: /etc/kernel/cmdline had no post-write verification; added
     read-back check asserting file exists and UUID present in content
@@ -294,8 +414,8 @@ cachyos-gtr9-iso changelog
   * Fix MED: no warn() function; error conditions used log() which writes
     to stdout; added warn() routing to stderr
   * Fix MED: ry-install.fish --verify-static 2>&1 merged stderr into
-    stdout — lost stream separation; now uses if/else preserving streams
-  * Fix LOW: no log when ry-install.fish not found — silent skip; now warns
+    stdout - lost stream separation; now uses if/else preserving streams
+  * Fix LOW: no log when ry-install.fish not found - silent skip; now warns
   * Fix LOW: missing explicit exit 0
 
 3.7.0 (2026-03-09)
