@@ -1,4 +1,4 @@
-![version](https://img.shields.io/badge/version-7.195.0%20r1-green?style=flat-square) ![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square) ![fish](https://img.shields.io/badge/fish-3.6%2B-orange?style=flat-square) · [CHANGELOG](CHANGELOG.txt)
+[CHANGELOG](CHANGELOG.txt)
 
 # Custom CachyOS ISO — GTR9 Pro Profile
 
